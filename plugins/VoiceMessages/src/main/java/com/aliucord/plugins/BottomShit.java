@@ -48,6 +48,19 @@ public final class BottomShit extends BottomSheet {
         addIntro(context, "Customize voice recording quality and the appearance of the voice message button.");
 
         addSectionHeader(context, "Recording", true);
+        CheckedSetting disableSelectionPopup = Utils.createCheckedSetting(
+                context,
+                CheckedSetting.ViewType.SWITCH,
+                "Disable selection popup",
+                "Hold the microphone to record, release to send, and slide away to cancel"
+        );
+        disableSelectionPopup.setChecked(settings.getBool("disableSelectionPopup", false));
+        disableSelectionPopup.setOnCheckedListener(value -> {
+            settings.setBool("disableSelectionPopup", value);
+            VoiceMessages.refreshRecordingBehavior();
+        });
+        addSetting(disableSelectionPopup, context, 4);
+
         CheckedSetting highSamplingRate = Utils.createCheckedSetting(
                 context,
                 CheckedSetting.ViewType.SWITCH,

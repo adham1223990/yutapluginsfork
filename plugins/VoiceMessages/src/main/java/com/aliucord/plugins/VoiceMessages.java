@@ -2,6 +2,7 @@ package com.aliucord.plugins;
 
 import android.annotation.SuppressLint;
 import android.content.Context;
+import android.content.ContextWrapper;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.drawable.Drawable;
@@ -10,24 +11,26 @@ import android.media.MediaMetadataRetriever;
 import android.media.MediaRecorder;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Bundle;
 import android.text.Editable;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.ViewParent;
 import android.view.ViewTreeObserver;
 import android.widget.LinearLayout;
-import android.widget.PopupWindow;
 import android.widget.RelativeLayout;
-import android.widget.TextView;
 
 import androidx.appcompat.widget.AppCompatImageButton;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentManager;
+import androidx.lifecycle.Lifecycle;
+import androidx.lifecycle.LifecycleEventObserver;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.aliucord.Constants;
@@ -46,14 +49,20 @@ import com.discord.utilities.permissions.PermissionUtils;
 import com.discord.widgets.chat.input.ChatInputViewModel;
 import com.discord.widgets.chat.input.WidgetChatInput;
 import com.discord.widgets.chat.input.WidgetChatInputEditText$setOnTextChangedListener$1;
+import com.discord.widgets.hubs.RadioSelectorItem;
+import com.discord.widgets.hubs.RadioSelectorItems;
+import com.discord.widgets.hubs.WidgetRadioSelectorBottomSheet;
 import com.lytefast.flexinput.widget.FlexEditText;
 
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.Arrays;
 import java.util.UUID;
 import java.util.concurrent.Future;
+
+import kotlin.Unit;
 
 @SuppressWarnings("unused")
 @AliucordPlugin
@@ -62,6 +71,9 @@ public class VoiceMessages extends Plugin {
     static final int DEFAULT_ICON_COLOR = Color.WHITE;
     private static final long MIN_RECORDING_MILLIS = 500;
     private static final String BUTTON_TAG = "VoiceMessages.RecordButton";
+    private static final String VOICE_MODE_POPUP_TAG = "VoiceMessages.VoiceMode";
+    private static final int VOICE_MODE_RECORD = 1;
+    private static final int VOICE_MODE_FILE = 2;
     static final int AUDIO_FILE_PICKER_REQUEST_CODE = 4832;
     static final String AUDIO_FILE_PICKER_TAG = "VoiceMessages.AudioFilePicker";
     private static VoiceMessages instance;
@@ -123,7 +135,13 @@ public class VoiceMessages extends Plugin {
     private View observedActivityRoot;
     private ViewTreeObserver.OnGlobalLayoutListener inputLayoutListener;
     private boolean activityObservationRetryScheduled;
-    private PopupWindow voiceModePopup;
+    private WidgetRadioSelectorBottomSheet voiceModePopup;
+    private int activeRecordPointerId = MotionEvent.INVALID_POINTER_ID;
+    private boolean recordingStartedByHold;
+    private AppActivity pendingUiActivity;
+    private LifecycleEventObserver pendingUiObserver;
+    private Runnable pendingUiDrain;
+    private AppActivity audioFilePickerActivity;
     private boolean delayedStopPending;
     private volatile boolean audioFileSendInProgress;
     private volatile Future<?> audioFileTask;
@@ -193,31 +211,74 @@ public class VoiceMessages extends Plugin {
         configureRecordButton(context);
 
         recordButton.setOnTouchListener((view, motionEvent) -> {
-            switch (motionEvent.getAction()) {
+            switch (motionEvent.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
+                    activeRecordPointerId = motionEvent.getPointerId(0);
                     if (isRecording) {
                         return true;
                     }
-                    showVoiceModePopup();
+                    if (isSelectionPopupDisabled()) {
+                        recordingStartedByHold = startNormalVoiceRecording();
+                        updateRecordingUi();
+                        view.setPressed(recordingStartedByHold);
+                        ViewParent parent = view.getParent();
+                        if (recordingStartedByHold && parent != null) {
+                            parent.requestDisallowInterceptTouchEvent(true);
+                        }
+                    } else {
+                        showVoiceModePopup();
+                    }
+                    return true;
+                case MotionEvent.ACTION_POINTER_DOWN:
                     return true;
                 case MotionEvent.ACTION_UP:
+                    if (motionEvent.getPointerId(motionEvent.getActionIndex()) != activeRecordPointerId) {
+                        return true;
+                    }
+                    clearRecordButtonPress();
                     if (isRecording) {
                         onRecordStop(true, recordingChannelId);
                     }
                     return true;
+                case MotionEvent.ACTION_POINTER_UP:
+                    if (motionEvent.getPointerId(motionEvent.getActionIndex()) != activeRecordPointerId) {
+                        return true;
+                    }
+                    // Lifting the recording finger while another finger remains cancels the gesture.
                 case MotionEvent.ACTION_CANCEL:
+                    clearRecordButtonPress();
                     if (isRecording) {
                         onRecordStop(false, 0L);
                     }
                     return true;
                 case MotionEvent.ACTION_MOVE:
-                    if (isRecording && (motionEvent.getY() < 0 || motionEvent.getY() > view.getHeight())) {
+                    int pointerIndex = motionEvent.findPointerIndex(activeRecordPointerId);
+                    int touchSlop = ViewConfiguration.get(view.getContext()).getScaledTouchSlop();
+                    if (isRecording && (pointerIndex < 0
+                            || motionEvent.getX(pointerIndex) < -touchSlop
+                            || motionEvent.getX(pointerIndex) > view.getWidth() + touchSlop
+                            || motionEvent.getY(pointerIndex) < -touchSlop
+                            || motionEvent.getY(pointerIndex) > view.getHeight() + touchSlop)) {
+                        clearRecordButtonPress();
                         onRecordStop(false, 0L);
                         Utils.showToast("Voice recording cancelled");
                     }
                     return true;
                 default:
                     return false;
+            }
+        });
+        recordButton.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
+            @Override
+            public void onViewAttachedToWindow(View view) {
+            }
+
+            @Override
+            public void onViewDetachedFromWindow(View view) {
+                clearRecordButtonPress();
+                if (recordingStartedByHold) {
+                    onRecordStop(false, 0L);
+                }
             }
         });
 
@@ -322,6 +383,31 @@ public class VoiceMessages extends Plugin {
         return settings.getBool("integratedButton", false);
     }
 
+    private boolean isSelectionPopupDisabled() {
+        return settings.getBool("disableSelectionPopup", false);
+    }
+
+    private void clearRecordButtonPress() {
+        activeRecordPointerId = MotionEvent.INVALID_POINTER_ID;
+        if (recordButton != null) {
+            recordButton.setPressed(false);
+            ViewParent parent = recordButton.getParent();
+            if (parent != null) {
+                parent.requestDisallowInterceptTouchEvent(false);
+            }
+        }
+    }
+
+    static void refreshRecordingBehavior() {
+        if (instance != null) {
+            if (instance.isSelectionPopupDisabled()) {
+                instance.clearPendingUiAction();
+                instance.dismissVoiceModePopup();
+            }
+            instance.updateRecordingUi();
+        }
+    }
+
     private int getIconColor() {
         int color = settings.getInt("buttonIconColor", DEFAULT_ICON_COLOR);
         return Color.alpha(color) == 0 ? DEFAULT_ICON_COLOR : color;
@@ -331,123 +417,152 @@ public class VoiceMessages extends Plugin {
         return instance;
     }
 
+    private AppActivity getChatActivity() {
+        Context context = inputLayout == null ? null : inputLayout.getContext();
+        while (context != null) {
+            if (context instanceof AppActivity) {
+                return (AppActivity) context;
+            }
+            if (!(context instanceof ContextWrapper)) {
+                break;
+            }
+            Context baseContext = ((ContextWrapper) context).getBaseContext();
+            if (baseContext == context) {
+                break;
+            }
+            context = baseContext;
+        }
+        return Utils.getAppActivity();
+    }
+
+    private void clearPendingUiAction() {
+        if (pendingUiDrain != null) {
+            Utils.mainThread.removeCallbacks(pendingUiDrain);
+        }
+        if (pendingUiActivity != null && pendingUiObserver != null) {
+            pendingUiActivity.getLifecycle().removeObserver(pendingUiObserver);
+        }
+        pendingUiDrain = null;
+        pendingUiObserver = null;
+        pendingUiActivity = null;
+    }
+
+    private void runWhenChatResumed(Runnable action) {
+        clearPendingUiAction();
+        AppActivity activity = getChatActivity();
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
+            return;
+        }
+        long channelId = StoreStream.getChannelsSelected().getId();
+        pendingUiActivity = activity;
+        pendingUiDrain = () -> {
+            if (instance != this || pendingUiActivity != activity) {
+                return;
+            }
+            FragmentManager fragmentManager = activity.getSupportFragmentManager();
+            if (activity.isFinishing() || activity.isDestroyed() || fragmentManager.isDestroyed()) {
+                clearPendingUiAction();
+                return;
+            }
+            if (!activity.getLifecycle().getCurrentState().isAtLeast(Lifecycle.State.RESUMED)
+                    || fragmentManager.isStateSaved()) {
+                return;
+            }
+            clearPendingUiAction();
+            if (getChatActivity() == activity && StoreStream.getChannelsSelected().getId() == channelId) {
+                action.run();
+            }
+        };
+        pendingUiObserver = (owner, event) -> {
+            if (pendingUiActivity != activity) {
+                return;
+            }
+            if (event == Lifecycle.Event.ON_RESUME) {
+                Utils.mainThread.post(pendingUiDrain);
+            } else if (event == Lifecycle.Event.ON_DESTROY) {
+                clearPendingUiAction();
+            }
+        };
+        activity.getLifecycle().addObserver(pendingUiObserver);
+        // Run outside lifecycle/fragment callbacks, after Discord clears its saved screen state.
+        if (pendingUiDrain != null) {
+            Utils.mainThread.post(pendingUiDrain);
+        }
+    }
+
     private void showVoiceModePopup() {
-        if (recordButton == null || isRecording || voiceModePopup != null) {
+        if (recordButton == null || isRecording || voiceModePopup != null || isSelectionPopupDisabled()) {
+            return;
+        }
+        runWhenChatResumed(this::showVoiceModePopupNow);
+    }
+
+    private void showVoiceModePopupNow() {
+        if (recordButton == null || isRecording || voiceModePopup != null || isSelectionPopupDisabled()) {
             return;
         }
 
-        Context context = recordButton.getContext();
-        int popupWidth = DimenUtils.dpToPx(280);
-        LinearLayout menu = new LinearLayout(context);
-        menu.setOrientation(LinearLayout.VERTICAL);
-        menu.setPadding(
-                DimenUtils.dpToPx(6),
-                DimenUtils.dpToPx(6),
-                DimenUtils.dpToPx(6),
-                DimenUtils.dpToPx(6)
-        );
-        GradientDrawable menuBackground = new GradientDrawable();
-        menuBackground.setColor(themeColor(context, "colorBackgroundSecondary", Color.rgb(32, 34, 37)));
-        menuBackground.setCornerRadius(DimenUtils.dpToPx(12));
-        menuBackground.setStroke(
-                DimenUtils.dpToPx(1),
-                themeColor(context, "colorBackgroundTertiary", Color.rgb(64, 68, 75))
-        );
-        menu.setBackground(menuBackground);
-
-        TextView recordOption = createVoiceModeOption(
-                context,
-                "Send Voice Message",
-                this::startNormalVoiceRecording
-        );
-        TextView fileOption = createVoiceModeOption(
-                context,
-                "Send .mp3/.wav/etc. as Voice Message",
-                ignored -> openAudioFilePicker()
-        );
-        menu.addView(recordOption);
-        menu.addView(fileOption);
-
-        PopupWindow popup = new PopupWindow(
-                menu,
-                popupWidth,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                true
-        );
-        popup.setBackgroundDrawable(menuBackground);
-        popup.setOutsideTouchable(true);
-        popup.setFocusable(true);
-        popup.setElevation(DimenUtils.dpToPx(8));
-        popup.setOnDismissListener(() -> {
-            if (voiceModePopup == popup) {
-                voiceModePopup = null;
-            }
-        });
-        voiceModePopup = popup;
-
-        menu.measure(
-                View.MeasureSpec.makeMeasureSpec(popupWidth, View.MeasureSpec.EXACTLY),
-                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
-        );
-        int popupHeight = menu.getMeasuredHeight();
-        popup.setHeight(popupHeight);
         try {
-            popup.showAsDropDown(
-                    recordButton,
-                    recordButton.getWidth() - popupWidth,
-                    -recordButton.getHeight() - popupHeight - DimenUtils.dpToPx(8)
-            );
+            AppActivity activity = getChatActivity();
+            FragmentManager fragmentManager = activity.getSupportFragmentManager();
+            if (fragmentManager.findFragmentByTag(VOICE_MODE_POPUP_TAG) != null) {
+                return;
+            }
+
+            // Use Discord's own sheet and rows so its selected theme controls every color.
+            WidgetRadioSelectorBottomSheet sheet = new WidgetRadioSelectorBottomSheet();
+            Bundle args = new Bundle();
+            args.putParcelable("intent_args_key", new RadioSelectorItems(
+                    "Voice Message",
+                    Arrays.asList(
+                            new RadioSelectorItem(VOICE_MODE_RECORD, "Send Voice Message", false),
+                            new RadioSelectorItem(VOICE_MODE_FILE, "Send Audio File as Voice Message", false)
+                    )
+            ));
+            sheet.setArguments(args);
+            sheet.setOnSelected(itemId -> {
+                dismissVoiceModePopup();
+                if (itemId == VOICE_MODE_RECORD) {
+                    startNormalVoiceRecording();
+                } else if (itemId == VOICE_MODE_FILE) {
+                    openAudioFilePicker();
+                }
+                return Unit.a;
+            });
+            sheet.getLifecycle().addObserver((LifecycleEventObserver) (owner, event) -> {
+                if (event == Lifecycle.Event.ON_DESTROY && voiceModePopup == sheet) {
+                    voiceModePopup = null;
+                }
+            });
+            voiceModePopup = sheet;
+            sheet.showNow(fragmentManager, VOICE_MODE_POPUP_TAG);
         } catch (RuntimeException e) {
-            voiceModePopup = null;
-            logger.error(e);
-        }
-    }
-
-    private TextView createVoiceModeOption(Context context, String label, View.OnClickListener listener) {
-        TextView option = new TextView(context);
-        option.setText(label);
-        option.setTextColor(themeColor(context, "colorHeaderPrimary", Color.WHITE));
-        option.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        option.setGravity(Gravity.CENTER_VERTICAL);
-        option.setMinHeight(DimenUtils.dpToPx(48));
-        option.setPadding(
-                DimenUtils.dpToPx(12),
-                0,
-                DimenUtils.dpToPx(12),
-                0
-        );
-        option.setClickable(true);
-        option.setFocusable(true);
-        TypedValue selectableValue = new TypedValue();
-        if (context.getTheme().resolveAttribute(
-                android.R.attr.selectableItemBackground,
-                selectableValue,
-                true
-        ) && selectableValue.resourceId != 0) {
-            option.setBackground(ContextCompat.getDrawable(context, selectableValue.resourceId));
-        }
-        option.setOnClickListener(ignored -> {
             dismissVoiceModePopup();
-            listener.onClick(option);
-        });
-        return option;
+            logger.error(e);
+            Utils.showToast("Unable to open voice message options");
+        }
     }
 
-    private void startNormalVoiceRecording(View ignored) {
+    private boolean startNormalVoiceRecording() {
         try {
             recordingChannelId = StoreStream.getChannelsSelected().getId();
             recordingReply = getPendingReply(recordingChannelId);
-            onRecordStart();
+            return onRecordStart();
         } catch (IOException | RuntimeException e) {
             logger.error(e);
             Utils.showToast("Unable to start voice recording");
+            return false;
         }
     }
 
     private void dismissVoiceModePopup() {
-        if (voiceModePopup != null) {
-            voiceModePopup.dismiss();
-            voiceModePopup = null;
+        WidgetRadioSelectorBottomSheet sheet = voiceModePopup;
+        voiceModePopup = null;
+        if (sheet != null) {
+            sheet.setOnSelected(null);
+            if (sheet.isAdded()) {
+                sheet.dismissAllowingStateLoss();
+            }
         }
     }
 
@@ -807,7 +922,7 @@ public class VoiceMessages extends Plugin {
         }
 
         if (ContextCompat.checkSelfPermission(Utils.getAppContext(), android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(Utils.getAppActivity(), new String[]{android.Manifest.permission.RECORD_AUDIO}, 1);
+            ActivityCompat.requestPermissions(getChatActivity(), new String[]{android.Manifest.permission.RECORD_AUDIO}, 1);
             Utils.showToast("Microphone permission is required");
             return false;
         }
@@ -864,14 +979,17 @@ public class VoiceMessages extends Plugin {
         if (audioFileSendInProgress) {
             return;
         }
+        runWhenChatResumed(this::openAudioFilePickerNow);
+    }
+
+    private void openAudioFilePickerNow() {
+        if (audioFileSendInProgress) {
+            return;
+        }
 
         try {
-            AppActivity activity = Utils.getAppActivity();
+            AppActivity activity = getChatActivity();
             FragmentManager fragmentManager = activity.getSupportFragmentManager();
-            if (fragmentManager.isStateSaved()) {
-                Utils.showToast("Please try again in a moment");
-                return;
-            }
             if (fragmentManager.findFragmentByTag(AUDIO_FILE_PICKER_TAG) != null) {
                 return;
             }
@@ -880,6 +998,7 @@ public class VoiceMessages extends Plugin {
             audioFileReply = getPendingReply(audioFileChannelId);
             AudioFilePickerFragment picker = new AudioFilePickerFragment();
             fragmentManager.beginTransaction().add(picker, AUDIO_FILE_PICKER_TAG).commitNow();
+            audioFilePickerActivity = activity;
             picker.open();
         } catch (RuntimeException e) {
             clearAudioFileSelection();
@@ -1023,9 +1142,10 @@ public class VoiceMessages extends Plugin {
         if (send && elapsedMillis < MIN_RECORDING_MILLIS) {
             if (!delayedStopPending) {
                 delayedStopPending = true;
+                MediaRecorder pendingRecorder = mediaRecorder;
                 Utils.mainThread.postDelayed(() -> {
-                    delayedStopPending = false;
-                    if (isRecording) {
+                    if (isRecording && mediaRecorder == pendingRecorder) {
+                        delayedStopPending = false;
                         onRecordStop(true, discordid);
                     }
                 }, MIN_RECORDING_MILLIS - elapsedMillis);
@@ -1034,7 +1154,9 @@ public class VoiceMessages extends Plugin {
         }
         delayedStopPending = false;
 
+        recordingStartedByHold = false;
         isRecording = false;
+        clearRecordButtonPress();
         if (updateWaveformThread != null) {
             updateWaveformThread.interrupt();
         }
@@ -1099,8 +1221,8 @@ public class VoiceMessages extends Plugin {
         }
         if (recordButton != null) {
             recordButton.setContentDescription(isRecording
-                    ? "Stop recording voice message"
-                    : "Choose voice message type");
+                    ? (recordingStartedByHold ? "Release to send voice message" : "Stop recording voice message")
+                    : (isSelectionPopupDisabled() ? "Hold to record voice message" : "Choose voice message type"));
         }
     }
 
@@ -1251,11 +1373,12 @@ public class VoiceMessages extends Plugin {
     private void clearAudioFileSelection() {
         audioFileChannelId = 0L;
         audioFileReply = null;
+        audioFilePickerActivity = null;
     }
 
     private void removeAudioFilePicker() {
         try {
-            AppActivity activity = Utils.getAppActivity();
+            AppActivity activity = audioFilePickerActivity == null ? getChatActivity() : audioFilePickerActivity;
             FragmentManager fragmentManager = activity.getSupportFragmentManager();
             Fragment picker = fragmentManager.findFragmentByTag(AUDIO_FILE_PICKER_TAG);
             if (picker != null) {
@@ -1268,6 +1391,8 @@ public class VoiceMessages extends Plugin {
 
     @Override
     public void stop(Context context) {
+        clearPendingUiAction();
+        clearRecordButtonPress();
         dismissVoiceModePopup();
         removeAudioFilePicker();
         clearAudioFileSelection();
