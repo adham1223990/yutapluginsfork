@@ -1,8 +1,12 @@
-version = "1.0.10"
+version = "1.0.11"
 description = "Backports Discord's newer Markdown formatting to chat messages."
 aliucord {
     changelog.set(
         """
+        # 1.0.11
+        * Modernize settings pop-ups with rounded layouts and styled buttons
+        * Add inline validation, keyboard Done support, and a live bullet-color preview
+        * Add a bullet-color picker with hue, saturation, brightness, and opacity sliders
         # 1.0.10
         * Rewrite the plugin in Kotlin and unify Markdown parsing across messages, forum posts, and embeds
         * Fix quote/list alignment, nested formatting, and trailing quote spacing

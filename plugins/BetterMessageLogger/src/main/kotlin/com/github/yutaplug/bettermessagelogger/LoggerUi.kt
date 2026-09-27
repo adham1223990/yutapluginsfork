@@ -5,10 +5,14 @@ import android.content.Context
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.StateListDrawable
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
+import android.view.WindowManager
+import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import com.aliucord.Utils
 import com.discord.utilities.color.ColorCompat
@@ -35,6 +39,45 @@ internal class LoggerUi(val context: Context) {
     }
 
     fun column() = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+
+    fun dialogContent() = column().apply {
+        setPadding(dp(20), dp(4), dp(20), dp(12))
+        isFocusableInTouchMode = true
+    }
+
+    fun input(placeholder: String) = EditText(context).apply {
+        hint = placeholder
+        setTextColor(primary)
+        setHintTextColor(muted)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+        setSingleLine(true)
+        setPadding(dp(14), dp(12), dp(14), dp(12))
+        minimumHeight = dp(52)
+        background = StateListDrawable().apply {
+            fun outline(color: Int) = GradientDrawable().apply {
+                setColor(surface)
+                cornerRadius = dp(10).toFloat()
+                setStroke(dp(1), color)
+            }
+            addState(intArrayOf(android.R.attr.state_focused), outline(brand))
+            addState(intArrayOf(), outline(muted))
+        }
+    }
+
+    fun scroll(content: View, fraction: Float = 0.35f): ScrollView = object : ScrollView(context) {
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            val maximum = (resources.displayMetrics.heightPixels * fraction).toInt()
+            val height = if (MeasureSpec.getMode(heightMeasureSpec) == MeasureSpec.UNSPECIFIED) {
+                maximum
+            } else {
+                minOf(maximum, MeasureSpec.getSize(heightMeasureSpec))
+            }
+            super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(height, MeasureSpec.AT_MOST))
+        }
+    }.apply {
+        addView(content)
+        isFillViewport = false
+    }
 
     fun card() = column().apply {
         background = GradientDrawable().apply {
@@ -85,7 +128,14 @@ internal class LoggerUi(val context: Context) {
         return caption
     }
 
+    @Suppress("DEPRECATION") // ADJUST_RESIZE is needed on the Android 5+ versions this plugin supports.
     fun style(dialog: AlertDialog) {
+        // Inflate and theme the window before it is attached; onShow is too late for its first frame.
+        dialog.create()
+        dialog.window?.setSoftInputMode(
+            WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN or
+                WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE,
+        )
         dialog.window?.setBackgroundDrawable(
             GradientDrawable().apply {
                 setColor(background)
@@ -105,7 +155,7 @@ internal class LoggerUi(val context: Context) {
 
     fun heading(title: String) = text(title, 17f).apply { setTypeface(Typeface.DEFAULT, Typeface.BOLD) }
 
-    fun smallButton(title: String, click: () -> Unit) = text(title, 13f, brand).apply {
+    fun smallButton(title: String, color: Int = brand, click: () -> Unit) = text(title, 13f, color).apply {
         gravity = Gravity.CENTER
         setPadding(dp(12), dp(10), dp(12), dp(10))
         minimumHeight = dp(48)

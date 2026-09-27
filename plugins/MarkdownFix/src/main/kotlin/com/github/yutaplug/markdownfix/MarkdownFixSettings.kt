@@ -1,10 +1,7 @@
 package com.github.yutaplug.markdownfix
 
-import android.app.AlertDialog
-import android.content.Context
 import android.graphics.Color
 import android.graphics.Typeface
-import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.text.InputType
@@ -15,7 +12,6 @@ import android.text.style.StyleSpan
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
-import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.aliucord.Utils
@@ -136,90 +132,51 @@ class MarkdownFixSettings(private val settings: SettingsAPI, private val plugin:
     }
 
     private fun showScaleDialog(size: MarkdownAppearance.TextSize) {
-        val input = input(
-            format(MarkdownAppearance.scale(settings, size)),
-            "1.00",
-            InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL,
+        MarkdownEditDialog.show(
+            context = requireContext(),
+            title = size.title,
+            description = "Choose a scale from 0.1 to 3.0. Use 1.0 for normal text size.",
+            label = "Text scale",
+            value = format(MarkdownAppearance.scale(settings, size)),
+            hint = "1.00",
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL,
+            validate = { raw ->
+                val value = raw.replace(',', '.').toFloatOrNull()
+                if (value == null || !value.isFinite() || value !in 0.1f..3f) "Enter a number from 0.1 to 3.0" else null
+            },
+            save = { raw ->
+                settings.setString(size.key, raw.replace(',', '.').toFloat().toString())
+                changed()
+            },
+            reset = {
+                settings.setString(size.key, size.default.toString())
+                changed()
+            },
         )
-        editDialog(size.title, "Scale from 0.1 to 3.0. 1.0 is normal text size.", input, {
-            val value = input.text.toString().trim().replace(',', '.').toFloatOrNull()
-            if (value == null || !value.isFinite() || value !in 0.1f..3f) {
-                input.error = "Enter a number from 0.1 to 3.0"
-                false
-            } else {
-                settings.setString(size.key, value.toString())
-                true
-            }
-        }, { settings.setString(size.key, size.default.toString()) })
     }
 
     private fun showColorDialog() {
-        val input = input(
-            currentColor(),
-            "#5865F2",
-            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS,
-        )
-        editDialog("Bullet color", "Enter six hex digits, or eight to include opacity.", input, {
-            val value = MarkdownAppearance.normalizeColor(input.text.toString())
-            if (value == null) {
-                input.error = "Enter #RRGGBB or #AARRGGBB"
-                false
-            } else {
-                settings.setString(MarkdownAppearance.BULLET_COLOR, value)
-                true
-            }
-        }, { settings.setString(MarkdownAppearance.BULLET_COLOR, MarkdownAppearance.DEFAULT_BULLET_COLOR) })
-    }
-
-    private fun editDialog(title: String, message: String, input: EditText, save: () -> Boolean, reset: () -> Unit) {
-        val holder = LinearLayout(requireContext()).apply {
-            setPadding(dp(20), 0, dp(20), 0)
-            addView(input, LinearLayout.LayoutParams(-1, -2))
-        }
-        val dialog = AlertDialog
-            .Builder(requireContext())
-            .setTitle(title)
-            .setMessage(message)
-            .setView(holder)
-            .setNegativeButton("Cancel", null)
-            .setNeutralButton("Reset", null)
-            .setPositiveButton("Save", null)
-            .create()
-        dialog.setOnShowListener {
-            dialog.window?.setBackgroundDrawable(ColorDrawable(color("colorBackgroundPrimary", Color.rgb(54, 57, 63))))
-            val titleId = resources.getIdentifier("alertTitle", "id", "android")
-            dialog.findViewById<TextView>(titleId)?.setTextColor(color("colorHeaderPrimary", Color.WHITE))
-            dialog.findViewById<TextView>(android.R.id.message)?.setTextColor(color("colorTextNormal", Color.WHITE))
-            for (which in listOf(
-                AlertDialog.BUTTON_POSITIVE,
-                AlertDialog.BUTTON_NEGATIVE,
-                AlertDialog.BUTTON_NEUTRAL,
-            )) {
-                dialog.getButton(which).setTextColor(color("colorBrand", Color.rgb(88, 101, 242)))
-            }
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                if (save()) {
-                    changed()
-                    dialog.dismiss()
-                }
-            }
-            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
-                reset()
+        MarkdownEditDialog.show(
+            context = requireContext(),
+            title = "Bullet color",
+            description = "Pick a color with the sliders, or enter #RRGGBB or #AARRGGBB. Changes apply when you save.",
+            label = "Hex color",
+            value = currentColor(),
+            hint = "#5865F2",
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS,
+            colorPreview = true,
+            validate = { raw ->
+                if (MarkdownAppearance.normalizeColor(raw) == null) "Enter #RRGGBB or #AARRGGBB" else null
+            },
+            save = { raw ->
+                settings.setString(MarkdownAppearance.BULLET_COLOR, MarkdownAppearance.normalizeColor(raw)!!)
                 changed()
-                dialog.dismiss()
-            }
-        }
-        dialog.show()
-    }
-
-    private fun input(value: String, hint: String, type: Int): EditText = EditText(requireContext()).apply {
-        setSingleLine(true)
-        setSelectAllOnFocus(true)
-        inputType = type
-        setText(value)
-        this.hint = hint
-        setTextColor(color("colorTextNormal", Color.WHITE))
-        setHintTextColor(color("colorTextMuted", Color.LTGRAY))
+            },
+            reset = {
+                settings.setString(MarkdownAppearance.BULLET_COLOR, MarkdownAppearance.DEFAULT_BULLET_COLOR)
+                changed()
+            },
+        )
     }
 
     private fun actionRow(title: String, subtitle: String, action: () -> Unit): Pair<LinearLayout, TextView> {

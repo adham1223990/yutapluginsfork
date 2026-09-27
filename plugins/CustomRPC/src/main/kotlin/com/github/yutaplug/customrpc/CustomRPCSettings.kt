@@ -343,11 +343,11 @@ class CustomRPCSettings(private val settings: SettingsAPI, private val plugin: C
             }
         }
         content.addView(footer)
-        dialog.setOnShowListener {
-            dialog.window?.apply {
-                setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-                setLayout(minOf(resources.displayMetrics.widthPixels - dp(32), dp(480)), -2)
-            }
+        // Initialize the dialog and its final window size before the first visible frame.
+        dialog.create()
+        dialog.window?.apply {
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            setLayout(minOf(resources.displayMetrics.widthPixels - dp(32), dp(480)), -2)
         }
         dialog.show()
     }

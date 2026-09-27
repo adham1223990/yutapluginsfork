@@ -2,7 +2,6 @@ package com.github.yutaplug.bettermessagelogger
 
 import android.app.AlertDialog
 import android.graphics.Color
-import android.graphics.Typeface
 import android.os.Bundle
 import android.text.Editable
 import android.text.InputType
@@ -11,9 +10,7 @@ import android.text.TextWatcher
 import android.text.style.ForegroundColorSpan
 import android.view.Gravity
 import android.view.View
-import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import com.aliucord.Utils
 import com.aliucord.api.SettingsAPI
@@ -186,17 +183,24 @@ class BetterMessageLoggerSettings(private val settings: SettingsAPI) : BottomShe
     }
 
     private fun confirmClear() {
+        val content = ui.dialogContent()
+        content.addView(ui.text("Delete all saved messages and edit history?", 16f))
+        content.addView(
+            ui.card().apply {
+                addView(ui.text("This cannot be undone. Exported TXT files are kept.", 14f, ui.muted))
+            },
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(16) },
+        )
         showDialog(
             AlertDialog
                 .Builder(requireContext())
                 .setTitle("Clear saved logs?")
-                .setMessage(
-                    "This removes all logged messages and edit history from this device. Exported files are kept.",
-                ).setNegativeButton("Cancel", null)
+                .setView(content)
+                .setNegativeButton("Cancel", null)
                 .setPositiveButton("Clear logs") { _, _ ->
                     BetterMessageLogger.instance?.clearDatabase { if (isAdded) updateStorage() }
                 }.create(),
-        )
+        ) { dialog?.getButton(AlertDialog.BUTTON_POSITIVE)?.setTextColor(ui.danger) }
     }
 
     private fun idAction(parent: LinearLayout, key: String, title: String, description: String) {
@@ -212,49 +216,57 @@ class BetterMessageLoggerSettings(private val settings: SettingsAPI) : BottomShe
         .toCollection(LinkedHashSet())
 
     private fun idDialog(key: String, title: String, description: String) {
-        val content = ui.column().apply { setPadding(ui.dp(20), ui.dp(4), ui.dp(20), ui.dp(8)) }
+        val content = ui.dialogContent()
         content.addView(ui.text(description, 13f, ui.muted))
+        val count = ui.text("", 12f, ui.muted).apply { setPadding(0, ui.dp(16), 0, ui.dp(8)) }
+        content.addView(count)
         val list = ui.column()
         content.addView(
-            ScrollView(requireContext()).apply { addView(list) },
-            LinearLayout.LayoutParams(-1, ui.dp(180)).apply {
-                topMargin =
-                    ui.dp(12)
-            },
+            ui.scroll(list),
+            LinearLayout.LayoutParams(-1, -2),
         )
-        val input = EditText(requireContext()).apply {
-            hint = "Paste an ID"
+        content.addView(ui.text("Add an ID", 13f, ui.muted).apply { setPadding(0, ui.dp(18), 0, ui.dp(8)) })
+        val input = ui.input("Paste an ID").apply {
             inputType = InputType.TYPE_CLASS_NUMBER
-            setSingleLine(true)
-            setTextColor(ui.primary)
-            setHintTextColor(ui.muted)
         }
-        content.addView(input, LinearLayout.LayoutParams(-1, ui.dp(56)))
+        content.addView(input, LinearLayout.LayoutParams(-1, -2))
 
         fun updateList() {
             val ids = readIds(key)
+            count.text = "${ids.size} ${if (ids.size == 1) "entry" else "entries"}"
             captions[key]?.text = "$description · ${ids.size} added"
             list.removeAllViews()
             if (ids.isEmpty()) {
                 list.addView(
-                    ui.text("No IDs added", 14f, ui.muted).apply { setPadding(0, ui.dp(16), 0, 0) },
+                    ui.card().apply {
+                        addView(ui.text("No IDs added", 15f))
+                        addView(
+                            ui
+                                .text("Paste an ID below, then tap Add.", 13f, ui.muted)
+                                .apply { setPadding(0, ui.dp(6), 0, 0) },
+                        )
+                    },
                 )
             }
             ids.forEach { id ->
-                val row = LinearLayout(requireContext()).apply { gravity = Gravity.CENTER_VERTICAL }
+                val row = LinearLayout(requireContext()).apply {
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(ui.dp(12), 0, 0, 0)
+                    background = ui.card().background
+                }
                 row.addView(
                     ui.text(id.toString(), 14f).apply { setTextIsSelectable(true) },
                     LinearLayout.LayoutParams(0, -2, 1f),
                 )
                 row.addView(
-                    ui.smallButton("Remove") {
+                    ui.smallButton("Remove", ui.danger) {
                         val updated = readIds(key).apply { remove(id) }
                         settings.setString(key, updated.joinToString(","))
                         filtersChanged()
                         updateList()
                     },
                 )
-                list.addView(row, LinearLayout.LayoutParams(-1, -2))
+                list.addView(row, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(8) })
             }
         }
         updateList()
@@ -279,6 +291,7 @@ class BetterMessageLoggerSettings(private val settings: SettingsAPI) : BottomShe
 
                     else -> {
                         settings.setString(key, readIds(key).apply { add(id) }.joinToString(","))
+                        input.error = null
                         input.text.clear()
                         filtersChanged()
                         updateList()
@@ -332,7 +345,7 @@ class BetterMessageLoggerSettings(private val settings: SettingsAPI) : BottomShe
     }
 
     private fun colorDialog(key: String, title: String) {
-        val content = ui.column().apply { setPadding(ui.dp(20), ui.dp(4), ui.dp(20), ui.dp(8)) }
+        val content = ui.dialogContent()
         content.addView(
             ui.text(
                 "Drag to choose a color or enter a hex value. " +
@@ -342,22 +355,20 @@ class BetterMessageLoggerSettings(private val settings: SettingsAPI) : BottomShe
             ),
         )
         val picker = ColorPickerView(requireContext(), Color.parseColor(colorValue(key)))
-        content.addView(picker, LinearLayout.LayoutParams(-1, ui.dp(210)).apply { topMargin = ui.dp(16) })
+        val palette = ui.card().apply { addView(picker, LinearLayout.LayoutParams(-1, ui.dp(190))) }
+        content.addView(palette, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(16) })
         val sample = ui.text("Deleted message preview", 16f).apply {
             gravity = Gravity.CENTER
-            setPadding(0, ui.dp(16), 0, ui.dp(8))
+            setPadding(ui.dp(12), ui.dp(16), ui.dp(12), ui.dp(16))
+            background = ui.card().background
         }
-        content.addView(sample)
-        val input = EditText(requireContext()).apply {
-            hint = "#RRGGBB or #AARRGGBB"
+        content.addView(sample, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(12) })
+        content.addView(ui.text("Hex color", 13f, ui.muted).apply { setPadding(0, ui.dp(16), 0, ui.dp(8)) })
+        val input = ui.input("#RRGGBB or #AARRGGBB").apply {
             setText(colorValue(key))
-            setTextColor(ui.primary)
-            setHintTextColor(ui.muted)
-            setSingleLine(true)
             setSelectAllOnFocus(true)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
-            typeface = Typeface.MONOSPACE
-            gravity = Gravity.CENTER
+            contentDescription = "Hex color"
         }
         content.addView(input)
         sample.setTextColor(picker.color)
@@ -377,6 +388,7 @@ class BetterMessageLoggerSettings(private val settings: SettingsAPI) : BottomShe
             override fun afterTextChanged(s: Editable?) {
                 if (updating) return
                 parseColor(s.toString())?.let {
+                    input.error = null
                     picker.color = it
                     sample.setTextColor(it)
                 }
@@ -385,7 +397,7 @@ class BetterMessageLoggerSettings(private val settings: SettingsAPI) : BottomShe
         val dialog = AlertDialog
             .Builder(requireContext())
             .setTitle(title)
-            .setView(content)
+            .setView(ui.scroll(content, 0.60f))
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Save", null)
             .create()
@@ -412,13 +424,11 @@ class BetterMessageLoggerSettings(private val settings: SettingsAPI) : BottomShe
 
     private fun hex(color: Int) = String.format(Locale.ROOT, "#%08X", color)
 
-    private fun showDialog(value: AlertDialog, onShow: (() -> Unit)? = null) {
+    private fun showDialog(value: AlertDialog, configure: (() -> Unit)? = null) {
         dialog?.dismiss()
         dialog = value
-        value.setOnShowListener {
-            ui.style(value)
-            onShow?.invoke()
-        }
+        ui.style(value)
+        configure?.invoke()
         value.show()
     }
 

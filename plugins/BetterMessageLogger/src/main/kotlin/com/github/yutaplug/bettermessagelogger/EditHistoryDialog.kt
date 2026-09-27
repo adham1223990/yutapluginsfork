@@ -85,7 +85,7 @@ internal object EditHistoryDialog {
             .setView(content)
             .setPositiveButton("Close", null)
             .create()
-        dialog.setOnShowListener { ui.style(dialog) }
+        ui.style(dialog)
         dialog.show()
     }
 }
