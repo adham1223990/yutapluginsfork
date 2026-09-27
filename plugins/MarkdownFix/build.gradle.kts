@@ -1,8 +1,15 @@
-version = "1.0.9"
+version = "1.0.10"
 description = "Backports Discord's newer Markdown formatting to chat messages."
 aliucord {
     changelog.set(
         """
+        # 1.0.10
+        * Rewrite the plugin in Kotlin and unify Markdown parsing across messages, forum posts, and embeds
+        * Fix quote/list alignment, nested formatting, and trailing quote spacing
+        * Make bullets compact by default and remove the compact bullet option
+        * Improve settings with a live preview, immediate updates, and reset controls
+        * Remove restart prompts
+        * Fix spoilers in Markdown links, game mention updates, and ANSI style resets
         # 1.0.9
         * Add support for game mentions and ansi colors
         # 1.0.8
