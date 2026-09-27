@@ -1,8 +1,14 @@
-version = "1.0.8"
+version = "1.0.9"
 description = "Backports viewing Discord Nitro profile effects and profile frames."
 aliucord {
     changelog.set(
         """
+        # 1.0.9
+        * Rewrite the plugin in Kotlin
+        * Fix crashes when closing profile sheets and improve overlay and WebView cleanup
+        * Improve profile loading, collectible caching, and rate-limit handling
+        * Fix effect scaling, animation restarts, and loop timing
+        * Respect reduced motion settings
         # 1.0.8
         * Fix crash
         # 1.0.7

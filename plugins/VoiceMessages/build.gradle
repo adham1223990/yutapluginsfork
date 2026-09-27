@@ -1,9 +1,21 @@
-version = "1.1.11"
+version = "1.1.12"
 description = "Send Voice Messages"
 
 aliucord {
     changelog.set(
         """
+        # 1.1.12
+        * Rewrite the plugin in Kotlin
+        * Redesign settings and voice selection with themed cards and microphone previews
+        * Improve the color picker with presets, current/new previews, and keyboard support
+        * Fix the composer layout covering the attachment button
+        * Improve recording cancellation, channel permission handling, and waveforms for long recordings
+        * Detect audio file formats correctly and stream uploads to reduce memory usage
+        * Fix upload timeouts, cancellation, temporary file cleanup, and reply handling
+        * Fix settings restoration and prevent duplicate popups
+        * Limit temporary audio storage usage
+        * Use 48 kHz for recordings and remove the sampling rate toggle
+
         # 1.1.11
         * Use Discord's themed bottom sheet for voice message selection
         * Add an option to disable selection and hold the microphone to record

@@ -1,8 +1,15 @@
-version = "1.0.5"
+version = "1.0.6"
 description = "Backport super reactions."
 aliucord {
     changelog.set(
         """
+        # 1.0.6
+        * Fully rewrite the plugin in Kotlin
+        * Improve emoji-colored shine, selection, and pending feedback
+        * Fix repeated taps and reaction types on messages with many reactions
+        * Queue requests, prioritize taps, and honor Discord rate-limit cooldowns
+        * Fix super-reaction ownership and keep normal and super reactions separate
+        * Fix stale reaction counts, member lists, and cleanup when disabling the plugin
         # 1.0.5
         * Reduce reaction metadata requests to avoid Discord rate limits on messages with many reactions
         * Add rate-limit backoff and stop retrying alternate send endpoints after HTTP 429

@@ -1,0 +1,241 @@
+package com.github.yutaplug.profileeffects
+
+import java.math.BigDecimal
+import java.net.URI
+import java.util.Locale
+
+internal const val CDN = "https://cdn.discordapp.com"
+internal const val EFFECT_WIDTH = 450
+internal const val MAX_SURFACE_SIZE = 8191
+
+internal data class ProfileKey(val userId: Long, val guildId: Long?) {
+    fun route(): String = "/users/$userId/profile" + if (guildId != null) "?guild_id=$guildId" else ""
+}
+
+internal data class Profile(val effect: Product.Effect? = null, val frame: Product.Frame? = null)
+
+internal data class ProductKey(val sku: Long, val type: Int)
+
+internal data class ProfileProducts(val effect: ProductKey?, val frame: ProductKey?)
+
+internal sealed class Product {
+    data class Effect(val source: String?, val layers: List<EffectLayer>) : Product()
+
+    data class Frame(
+        val sku: Long,
+        val metrics: FrameMetrics,
+        val layers: List<FrameLayer>,
+    ) : Product()
+}
+
+internal data class EffectLayer(
+    val source: String,
+    val start: Long,
+    val duration: Long,
+    val loop: Boolean,
+    val loopDelay: Long,
+    val x: Long,
+    val y: Long,
+    val width: Long,
+    val height: Long,
+    val zIndex: Long,
+)
+
+internal data class FrameMetrics(
+    val innerWidth: Long,
+    val overflowTop: Long,
+    val overflowBottom: Long,
+    val overflowHorizontal: Long,
+)
+
+// Modern Kotlin enum bytecode depends on EnumEntries, absent from Discord's Kotlin 1.5 runtime.
+internal object Anchor {
+    const val TOP = 0
+    const val BOTTOM = 1
+    const val CENTER = 2
+}
+
+internal data class FrameLayer(
+    val id: Long,
+    val front: Boolean,
+    val anchor: Int,
+    val rail: Boolean,
+)
+
+/** Tolerate older named enums and newer numeric enums without rounding Discord snowflakes. */
+internal object ProfileData {
+    private const val MAX_COORDINATE = 10_000L
+    private const val MAX_TIME = 86_400_000L
+
+    fun products(body: Map<*, *>): ProfileProducts {
+        val global = body["user_profile"] as? Map<*, *>
+        val guild = body["guild_member_profile"] as? Map<*, *>
+        return ProfileProducts(
+            sku(guild, "profile_effect", 1) ?: sku(global, "profile_effect", 1),
+            sku(guild, "profile_frame", 3) ?: sku(global, "profile_frame", 3),
+        )
+    }
+
+    private fun sku(profile: Map<*, *>?, field: String, type: Int): ProductKey? {
+        if (profile == null) return null
+        val raw = profile[field]
+        val direct = positiveId(if (raw is Map<*, *>) raw["sku_id"] else raw)
+        if (direct != null) return ProductKey(direct, type)
+        for (item in list(profile["collectibles"])) {
+            val collectible = item as? Map<*, *> ?: continue
+            if (integer(collectible["type"]) != type.toLong()) continue
+            val id = positiveId(collectible["sku_id"]) ?: continue
+            return ProductKey(id, type)
+        }
+        return null
+    }
+
+    fun product(key: ProductKey, body: Map<*, *>): Product? {
+        // Bundles can put a different collectible before the requested effect/frame.
+        for (raw in list(body["items"])) {
+            val item = raw as? Map<*, *> ?: continue
+            if (integer(item["type"]) != key.type.toLong()) continue
+            when (key.type) {
+                1 -> {
+                    val layers = effects(item["effects"])
+                    val source = imageUrl(item["reducedMotionSrc"] ?: item["reduced_motion_src"])
+                        ?: imageUrl(item["staticFrameSrc"] ?: item["static_frame_src"])
+                    if (source != null || layers.isNotEmpty()) {
+                        return Product.Effect(source ?: layers.firstOrNull()?.source, layers)
+                    }
+                }
+
+                3 -> {
+                    val layers = frames(item["layers"])
+                    if (layers.isNotEmpty()) {
+                        return Product.Frame(
+                            key.sku,
+                            FrameMetrics(
+                                size(item["inner_width"] ?: item["innerWidth"], 1200),
+                                coordinate(item["overflow_top"] ?: item["overflowTop"], false),
+                                coordinate(item["overflow_bottom"] ?: item["overflowBottom"], false),
+                                coordinate(item["overflow_horizontal"] ?: item["overflowHorizontal"], false),
+                            ),
+                            layers,
+                        )
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    private fun effects(raw: Any?): List<EffectLayer> {
+        val result = ArrayList<EffectLayer>()
+        for (value in list(raw)) {
+            val item = value as? Map<*, *> ?: continue
+            val source = imageUrl(item["src"]) ?: continue
+            val position = item["position"] as? Map<*, *>
+            result.add(
+                EffectLayer(
+                    source,
+                    time(item["start"]),
+                    time(item["duration"]),
+                    boolean(item["loop"]),
+                    time(item["loopDelay"] ?: item["loop_delay"]),
+                    coordinate(position?.get("x"), true),
+                    coordinate(position?.get("y"), true),
+                    size(item["width"], EFFECT_WIDTH.toLong()),
+                    size(item["height"], 880),
+                    integer(item["zIndex"] ?: item["z_index"]) ?: 0,
+                ),
+            )
+        }
+        result.sortWith(Comparator { left, right -> left.zIndex.compareTo(right.zIndex) })
+        return result
+    }
+
+    private fun frames(raw: Any?): List<FrameLayer> {
+        val result = ArrayList<FrameLayer>()
+        val seen = HashSet<Long>()
+        for (value in list(raw)) {
+            val item = value as? Map<*, *> ?: continue
+            val id = positiveId(item["id"]) ?: continue
+            if (!seen.add(id)) continue
+            val anchor = when (enum(item["anchor"])) {
+                "1", "bottom" -> Anchor.BOTTOM
+                "2", "center", "middle" -> Anchor.CENTER
+                else -> Anchor.TOP
+            }
+            val order = enum(item["order"])
+            val type = enum(item["type"] ?: item["layer_type"])
+            result.add(
+                FrameLayer(
+                    id,
+                    order == "front" || order == "0",
+                    anchor,
+                    boolean(item["responsive"]) || type == "rail" || anchor == Anchor.CENTER,
+                ),
+            )
+        }
+        return result
+    }
+
+    fun imageUrl(raw: Any?): String? {
+        val text = trim(raw as? String ?: return null)
+        val url = when {
+            text.startsWith("//") -> "https:$text"
+            text.startsWith("/") -> CDN + text
+            else -> text
+        }
+        return try {
+            val uri = URI(url)
+            val host = uri.host?.lowercase(Locale.ROOT)
+            if (uri.scheme != "https" ||
+                uri.userInfo != null ||
+                uri.port != -1 ||
+                (host != "cdn.discordapp.com" && host != "media.discordapp.net")
+            ) {
+                null
+            } else {
+                uri.toASCIIString()
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun integer(raw: Any?): Long? = try {
+        // Gson's generic Map adapter uses Double; the transport instead supplies lazy numbers.
+        // Reject rounded doubles for IDs rather than requesting an unrelated product.
+        BigDecimal(raw?.toString() ?: "").longValueExact()
+    } catch (_: NumberFormatException) {
+        null
+    } catch (_: ArithmeticException) {
+        null
+    }
+
+    private fun positiveId(raw: Any?): Long? {
+        if (raw is Double && kotlin.math.abs(raw) > 9_007_199_254_740_991.0) return null
+        if (raw is Float && kotlin.math.abs(raw) > 16_777_215f) return null
+        return integer(raw)?.takeIf { it > 0 }
+    }
+
+    private fun enum(raw: Any?): String = integer(raw)?.toString() ?: trim(raw?.toString() ?: "")
+        .lowercase(Locale.ROOT)
+
+    private fun boolean(raw: Any?) = raw == true || raw?.toString().equals("true", ignoreCase = true)
+
+    private fun time(raw: Any?) = maxOf(0, minOf(integer(raw) ?: 0, MAX_TIME))
+
+    private fun coordinate(raw: Any?, signed: Boolean) =
+        maxOf(if (signed) -MAX_COORDINATE else 0, minOf(integer(raw) ?: 0, MAX_COORDINATE))
+
+    private fun size(raw: Any?, fallback: Long) = minOf(integer(raw)?.takeIf { it > 0 } ?: fallback, MAX_COORDINATE)
+
+    private fun list(raw: Any?): List<*> = raw as? List<*> ?: emptyList<Any>()
+
+    private fun trim(value: String): String {
+        // Avoid Kotlin text helpers backed by Discord's obfuscated primitive iterators.
+        var start = 0
+        var end = value.length
+        while (start < end && Character.isWhitespace(value[start])) start++
+        while (end > start && Character.isWhitespace(value[end - 1])) end--
+        return value.substring(start, end)
+    }
+}
