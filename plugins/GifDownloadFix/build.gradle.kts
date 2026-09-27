@@ -9,7 +9,6 @@ aliucord {
         * Show Klipy download errors instead of failing silently.
         * Retry the direct Klipy source if Discord's media proxy fails.
         * Avoid unnecessary legacy storage permission requests on Android 10+ in the media viewer.
-        * Preserve descriptive filenames for Giphy GIF downloads.
 
         # 1.0.0
         * Keep Tenor, Klipy, and Giphy GIF downloads named with a .gif extension.
