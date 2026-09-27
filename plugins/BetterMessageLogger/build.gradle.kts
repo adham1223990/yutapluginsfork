@@ -1,9 +1,15 @@
-version = "1.0.17"
+version = "1.0.18"
 description = "Keeps deleted messages and edit history visible in Discord chats."
 
 aliucord {
     changelog.set(
         """
+        # 1.0.18
+        * Rewrite the plugin entirely in Kotlin.
+        * Modernize settings and the edit-history popup with selectable versions and individual copy actions.
+        * Improve database reliability and edit-history storage, with bounded caches and loading limited to the current message range.
+        * Store logs in Aliucord/BetterMessageLogger.db without WAL, SHM, or disk journal files.
+
         # 1.0.17
         * Fix NitroSpoof
 
