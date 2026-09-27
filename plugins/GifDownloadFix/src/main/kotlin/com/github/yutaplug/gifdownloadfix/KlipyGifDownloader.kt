@@ -20,27 +20,38 @@ import kotlin.math.roundToInt
 
 /** Uses the embed's actual video when Klipy does not supply a GIF rendition. */
 internal object KlipyGifDownloader {
+    interface Progress {
+        fun update(stage: String, current: Int = 0, total: Int = 0)
+    }
+
     private const val MAX_SOURCE_BYTES = 64L * 1024 * 1024
     private const val MAX_FRAME_EDGE = 480
     private const val MAX_FRAMES = 600
     private const val MAX_DURATION_MS = 120_000L
     private const val FRAMES_PER_SECOND = 12
 
-    fun download(context: Context, mediaUri: Uri, gifUri: Uri?, fileName: String): String {
+    fun download(context: Context, mediaUri: Uri, gifUri: Uri?, fileName: String, directUri: Uri, progress: Progress): String {
         val source = File.createTempFile("klipy-source-", ".bin", context.cacheDir)
         val encoded = File.createTempFile("klipy-output-", ".gif", context.cacheDir)
         try {
-            val preferredUri = gifUri ?: mediaUri
-            try {
-                fetch(preferredUri, source)
-                prepareGif(source, encoded)
-            } catch (error: IOException) {
-                // A stale picker GIF must not prevent converting the current embed.
-                if (preferredUri == mediaUri || Thread.currentThread().isInterrupted) throw error
-                fetch(mediaUri, source)
-                prepareGif(source, encoded)
+            val candidates = listOfNotNull(gifUri, mediaUri, directUri).distinct()
+            var lastError: IOException? = null
+            for ((index, candidate) in candidates.withIndex()) {
+                try {
+                    progress.update(if (index == 0) "Fetching media" else "Retrying source media")
+                    fetch(candidate, source)
+                    prepareGif(source, encoded, progress)
+                    lastError = null
+                    break
+                } catch (error: IOException) {
+                    if (Thread.currentThread().isInterrupted) throw error
+                    lastError?.let { error.addSuppressed(it) }
+                    lastError = error
+                }
             }
+            lastError?.let { throw it }
             checkInterrupted()
+            progress.update("Saving to Downloads")
             return publish(context, encoded, fileName)
         } finally {
             source.delete()
@@ -78,7 +89,7 @@ internal object KlipyGifDownloader {
         }
     }
 
-    private fun prepareGif(source: File, destination: File) {
+    private fun prepareGif(source: File, destination: File, progress: Progress) {
         val header = ByteArray(12)
         val length = source.inputStream().use { it.read(header) }
         if (length >= 6 && String(header, 0, 6, Charsets.US_ASCII) in listOf("GIF87a", "GIF89a")) {
@@ -88,10 +99,11 @@ internal object KlipyGifDownloader {
         val isMp4 = length >= 8 && String(header, 4, 4, Charsets.US_ASCII) == "ftyp"
         val isWebm = length >= 4 && header.take(4).map { it.toInt() and 255 } == listOf(0x1a, 0x45, 0xdf, 0xa3)
         if (!isMp4 && !isWebm) throw IOException("Klipy returned neither a GIF nor a video")
-        convertVideo(source, destination)
+        convertVideo(source, destination, progress)
     }
 
-    private fun convertVideo(source: File, destination: File) {
+    private fun convertVideo(source: File, destination: File, progress: Progress) {
+        progress.update("Reading video")
         val retriever = MediaMetadataRetriever()
         try {
             retriever.setDataSource(source.absolutePath)
@@ -111,6 +123,7 @@ internal object KlipyGifDownloader {
                     val encoder = GifEncoder(output, width, height)
                     for (index in 0 until frameCount) {
                         checkInterrupted()
+                        if (index % FRAMES_PER_SECOND == 0) progress.update("Converting to GIF", index, frameCount)
                         val timeUs = index.toLong() * durationMs * 1000 / frameCount
                         val decoded = if (index == 0) {
                             first
@@ -137,6 +150,7 @@ internal object KlipyGifDownloader {
                         }
                     }
                     encoder.finish()
+                    progress.update("Converting to GIF", frameCount, frameCount)
                 }
             } finally {
                 first.recycle()

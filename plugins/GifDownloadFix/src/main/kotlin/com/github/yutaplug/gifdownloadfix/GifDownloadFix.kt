@@ -2,6 +2,7 @@ package com.github.yutaplug.gifdownloadfix
 
 import android.content.Context
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.view.MenuItem
@@ -36,6 +37,7 @@ class GifDownloadFix : Plugin() {
     private val klipyAliases = LinkedHashMap<Uri, Boolean>(32, 0.75f, true)
     private var klipyDownloads = Executors.newSingleThreadExecutor()
     private val activeKlipyDownloads = HashSet<Uri>()
+    private val downloadNotifications = HashSet<KlipyDownloadNotification>()
     private val mainHandler = Handler(Looper.getMainLooper())
 
     // Discord's bundled Unit singleton is named "a"; un-obfuscated Kotlin uses
@@ -110,6 +112,10 @@ class GifDownloadFix : Plugin() {
         running = false
         patcher.unpatchAll()
         klipyDownloads.shutdownNow()
+        synchronized(downloadNotifications) {
+            downloadNotifications.forEach { it.cancel() }
+            downloadNotifications.clear()
+        }
         synchronized(activeKlipyDownloads) { activeKlipyDownloads.clear() }
         synchronized(klipyAliases) { klipyAliases.clear() }
         synchronized(giphyNames) { giphyNames.clear() }
@@ -123,27 +129,58 @@ class GifDownloadFix : Plugin() {
         onSuccess: Function1<String, Unit>,
         onError: Function1<Throwable, Unit>,
     ) {
+        if (!running) return
         val mediaUri = unwrapProviderUrl(originalUri, GifProvider.KLIPY)
-        if (!synchronized(activeKlipyDownloads) { activeKlipyDownloads.add(mediaUri) }) return
+        if (!synchronized(activeKlipyDownloads) { activeKlipyDownloads.add(mediaUri) }) {
+            Utils.showToast("This Klipy GIF is already downloading", false)
+            return
+        }
+        val notification = KlipyDownloadNotification(context.applicationContext, fileName) { error ->
+            logger.error("Could not show the Klipy download notification", error)
+            callbackUnit
+        }
+        synchronized(downloadNotifications) { downloadNotifications.add(notification) }
+        notification.progress("Queued")
         try {
             klipyDownloads.execute {
                 try {
+                    logger.info("Starting Klipy GIF download: $mediaUri")
+                    val progress = object : KlipyGifDownloader.Progress {
+                        private var previousStage = ""
+
+                        override fun update(stage: String, current: Int, total: Int) {
+                            if (stage != previousStage) {
+                                logger.info("Klipy GIF: $stage")
+                                previousStage = stage
+                            }
+                            notification.progress(stage, current, total)
+                        }
+                    }
                     val savedName = KlipyGifDownloader.download(
                         context.applicationContext,
                         originalUri,
                         gifUri,
                         fileName,
+                        mediaUri,
+                        progress,
                     )
+                    logger.info("Saved Klipy GIF to Downloads/$savedName")
+                    notification.complete(savedName)
                     mainHandler.post { if (running) onSuccess.invoke(savedName) }
                 } catch (error: Throwable) {
                     logger.error("Klipy GIF download failed for $mediaUri", error)
+                    notification.failed()
                     mainHandler.post { if (running) onError.invoke(error) }
                 } finally {
+                    synchronized(downloadNotifications) { downloadNotifications.remove(notification) }
                     synchronized(activeKlipyDownloads) { activeKlipyDownloads.remove(mediaUri) }
                 }
             }
         } catch (error: Exception) {
+            synchronized(downloadNotifications) { downloadNotifications.remove(notification) }
             synchronized(activeKlipyDownloads) { activeKlipyDownloads.remove(mediaUri) }
+            logger.error("Could not start Klipy GIF download", error)
+            notification.failed()
             onError.invoke(error)
         }
     }
@@ -335,9 +372,15 @@ class GifDownloadFix : Plugin() {
                         frame.setResult(null)
                         try {
                             logger.info("Intercepted Klipy media download: $mediaUri")
-                            widgetMedia.requestMediaDownload {
+                            // MediaStore owns our output on Android 10+, so no
+                            // legacy storage permission callback is necessary.
+                            if (Build.VERSION.SDK_INT >= 29) {
                                 downloadKlipyFromAction(context, mediaUri, gifUri, fileName)
-                                callbackUnit
+                            } else {
+                                widgetMedia.requestMediaDownload {
+                                    downloadKlipyFromAction(context, mediaUri, gifUri, fileName)
+                                    callbackUnit
+                                }
                             }
                         } catch (error: Throwable) {
                             reportHookFailure("media action", error)
@@ -420,12 +463,16 @@ class GifDownloadFix : Plugin() {
                 Utils.showToast("Saved GIF to Downloads/$savedName", true)
                 callbackUnit
             },
-            { callbackUnit },
+            { error ->
+                Utils.showToast("Klipy GIF download failed: ${error.message ?: error.javaClass.simpleName}", true)
+                callbackUnit
+            },
         )
     }
 
     private fun reportHookFailure(stage: String, error: Throwable) {
         logger.error("Klipy $stage failed", error)
+        Utils.showToast("Could not start Klipy GIF download; check Debug Logs", true)
     }
 
     private fun resolveGifUri(provider: GifProvider, mediaUri: Uri, previewUri: Uri?): Uri? {
