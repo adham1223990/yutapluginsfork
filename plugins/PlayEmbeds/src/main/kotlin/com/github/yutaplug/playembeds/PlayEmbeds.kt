@@ -49,6 +49,7 @@ class PlayEmbeds : Plugin() {
     private val embedLinks = WeakHashMap<ViewGroup, EmbedLink>()
     private val hostedEmbeds = WeakHashMap<ViewGroup, MessageEmbed>()
     private val hostedPlayers = WeakHashMap<ViewGroup, HostedPlayerState>()
+    private val embedRowKeys = WeakHashMap<ViewGroup, Pair<Long, Int>>()
     private val inlineVideoPlayers = WeakHashMap<ViewGroup, InlineVideoState>()
     private val spotifyPlayButtons = WeakHashMap<ViewGroup, ImageView>()
     private val fullscreenPlayers = WeakHashMap<WebView, FullscreenState>()
@@ -73,7 +74,15 @@ class PlayEmbeds : Plugin() {
             onConfigure,
             PreHook { frame ->
                 val item = frame.thisObject as? WidgetChatListAdapterItemEmbed ?: return@PreHook
-                embedContainers(item.itemView).forEach(::resetEmbedContainer)
+                val entry = frame.args.getOrNull(1) as? EmbedEntry
+                embedContainers(item.itemView).forEach { container ->
+                    val state = hostedPlayers[container]
+                    val samePlayer = entry != null && state != null &&
+                        embedRowKeys[container] == (entry.message.id to entry.embedIndex) &&
+                        hostedEmbed(entry.embed)?.url == state.url &&
+                        state.webView.parent === state.parent
+                    if (!samePlayer) resetEmbedContainer(container)
+                }
             },
         )
         patcher.patch(
@@ -81,6 +90,15 @@ class PlayEmbeds : Plugin() {
             Hook { frame ->
                 val item = frame.thisObject as? WidgetChatListAdapterItemEmbed ?: return@Hook
                 val entry = frame.args.getOrNull(1) as? EmbedEntry ?: return@Hook
+                embedContainers(item.itemView).forEach { container ->
+                    embedRowKeys[container] = entry.message.id to entry.embedIndex
+                    hostedPlayers[container]?.let { state ->
+                        state.previousVisibility.forEach { (view, visibility) ->
+                            if (visibility == View.VISIBLE) view.visibility = View.INVISIBLE
+                        }
+                        state.webView.bringToFront()
+                    }
+                }
                 val adapter = getAdapter.invoke(null, item) as WidgetChatListAdapter
                 val handler = adapter.eventHandler
                 if (handler.javaClass.name == "com.discord.widgets.search.results.WidgetSearchResults\$SearchResultAdapterEventHandler") {
@@ -275,6 +293,7 @@ class PlayEmbeds : Plugin() {
         removeSpotifyPlayButton(container)
         embedLinks.remove(container)
         hostedEmbeds.remove(container)
+        embedRowKeys.remove(container)
     }
 
     private fun embedLinkForView(view: View): EmbedLink? {
@@ -488,6 +507,11 @@ class PlayEmbeds : Plugin() {
         }
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
         webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                return redirectYoutubeVideo(view, embed, request.url.toString()) ||
+                    !isHttpUrl(request.url.toString())
+            }
+
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
                 if (embed.provider == HostedProvider.YOUTUBE && isYoutubePlayerRequest(request)) {
                     Utils.showToast("YouTube player failed to load: ${error.description}", true)
@@ -507,7 +531,7 @@ class PlayEmbeds : Plugin() {
             @Suppress("DEPRECATION")
             @Deprecated("Deprecated in Java")
             override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean {
-                return !isHttpUrl(url)
+                return redirectYoutubeVideo(view, embed, url) || !isHttpUrl(url)
             }
         }
         webView.webChromeClient = object : WebChromeClient() {
@@ -541,7 +565,7 @@ class PlayEmbeds : Plugin() {
                 if (child.visibility == View.VISIBLE) child.visibility = View.INVISIBLE
             }
         }
-        hostedPlayers[container] = HostedPlayerState(webView, playerParent, previousVisibility)
+        hostedPlayers[container] = HostedPlayerState(webView, playerParent, previousVisibility, embed.url)
         playerParent.addView(webView, playerParams)
         webView.bringToFront()
         container.requestLayout()
@@ -577,6 +601,25 @@ class PlayEmbeds : Plugin() {
         } else {
             webView.loadUrl(url)
         }
+    }
+
+    private fun redirectYoutubeVideo(webView: WebView, embed: HostedEmbed, url: String): Boolean {
+        if (embed.provider != HostedProvider.YOUTUBE) return false
+        val uri = Uri.parse(url)
+        val host = uri.host
+        if (!isHost(host, "youtube.com") && !isHost(host, "youtu.be")) return false
+        val path = uri.path.orEmpty().trim('/')
+        // An /embed/ request is the player itself. A watch/shorts/live link
+        // selected inside it must not replace the iframe with YouTube's site.
+        if (path.startsWith("embed/")) return false
+        val videoId = youtubeVideoId(uri) ?: return false
+        hideFullscreen(webView)
+        webView.post {
+            if (webView.parent != null) {
+                loadHostedPlayer(webView, embed.copy(url = "https://www.youtube.com/watch?v=${Uri.encode(videoId)}"))
+            }
+        }
+        return true
     }
 
     private fun isYoutubePlayerRequest(request: WebResourceRequest): Boolean {
@@ -962,15 +1005,7 @@ class PlayEmbeds : Plugin() {
 
     private fun youtubePlayerUrl(url: String, appOrigin: String): String {
         val uri = Uri.parse(url)
-        val host = uri.host?.lowercase(Locale.ROOT)
-        val path = uri.path.orEmpty().trim('/')
-        val videoId = when {
-            host == "youtu.be" -> path.substringBefore('/')
-            path.startsWith("embed/") -> path.removePrefix("embed/").substringBefore('/')
-            path.startsWith("shorts/") -> path.removePrefix("shorts/").substringBefore('/')
-            path.startsWith("live/") -> path.removePrefix("live/").substringBefore('/')
-            else -> uri.getQueryParameter("v")
-        }?.takeIf { it.length > 0 }
+        val videoId = youtubeVideoId(uri)
 
         return if (videoId == null) {
             url
@@ -980,7 +1015,21 @@ class PlayEmbeds : Plugin() {
         }
     }
 
+    private fun youtubeVideoId(uri: Uri): String? {
+        val host = uri.host?.lowercase(Locale.ROOT)
+        val path = uri.path.orEmpty().trim('/')
+        return when {
+            host == "youtu.be" -> path.substringBefore('/')
+            path.startsWith("embed/") -> path.removePrefix("embed/").substringBefore('/')
+            path.startsWith("shorts/") -> path.removePrefix("shorts/").substringBefore('/')
+            path.startsWith("live/") -> path.removePrefix("live/").substringBefore('/')
+            path == "watch" -> uri.getQueryParameter("v")
+            else -> null
+        }?.takeIf { it.length > 0 }
+    }
+
     private fun embedLink(embed: MessageEmbed): EmbedLink? {
+        if (isKkinstagramEmbed(embed)) return null
         if (isGifEmbed(embed)) return null
         if (genericVideoUrl(embed) != null) return EmbedLink.InlineVideo(embed)
         return mediaLink(embed)?.let { EmbedLink.Direct(it) }
@@ -988,6 +1037,7 @@ class PlayEmbeds : Plugin() {
     }
 
     private fun genericVideoUrl(embed: MessageEmbed): String? {
+        if (isKkinstagramEmbed(embed)) return null
         if (isGifEmbed(embed)) return null
         val video = embed.m() ?: return null
         val providerName = embed.g()?.a()?.lowercase(Locale.ROOT)
@@ -999,6 +1049,7 @@ class PlayEmbeds : Plugin() {
     }
 
     private fun hostedEmbed(embed: MessageEmbed): HostedEmbed? {
+        if (isKkinstagramEmbed(embed)) return null
         if (isGifEmbed(embed)) return null
         if (genericVideoUrl(embed) != null) return null
         if (mediaLink(embed) != null) return null
@@ -1014,6 +1065,7 @@ class PlayEmbeds : Plugin() {
 
     private fun hostedEmbed(url: String): HostedEmbed? {
         if (!isHttpUrl(url)) return null
+        if (isHost(Uri.parse(url).host, "kkinstagram.com")) return null
         if (isGifUrl(url)) return null
         if (isDiscordNativeVideoUrl(url)) return null
         if (mediaLink(url) != null) return null
@@ -1039,6 +1091,11 @@ class PlayEmbeds : Plugin() {
             embed.m()?.b(),
             embed.g()?.b(),
         ).any(::isGifUrl)
+    }
+
+    private fun isKkinstagramEmbed(embed: MessageEmbed): Boolean {
+        return listOfNotNull(embed.l(), embed.g()?.b(), embed.m()?.c(), embed.m()?.b())
+            .any { url -> isHost(Uri.parse(url).host, "kkinstagram.com") }
     }
 
     private fun isGifUrl(url: String): Boolean {
@@ -1083,6 +1140,7 @@ class PlayEmbeds : Plugin() {
     }
 
     private fun mediaLink(embed: MessageEmbed): MediaLink? {
+        if (isKkinstagramEmbed(embed)) return null
         if (isGifEmbed(embed)) return null
         val video = embed.m()
         val embedUrl = embed.l()?.takeIf(::isHttpUrl)
@@ -1179,6 +1237,7 @@ class PlayEmbeds : Plugin() {
         val webView: WebView,
         val parent: ViewGroup,
         val previousVisibility: List<Pair<View, Int>>,
+        val url: String,
     )
 
     private data class InlineVideoState(

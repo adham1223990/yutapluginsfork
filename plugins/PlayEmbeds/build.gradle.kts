@@ -1,9 +1,14 @@
-version = "1.0.1"
+version = "1.0.2"
 description = "Plays direct video and audio link embeds in Discord's built-in media player."
 
 aliucord {
     changelog.set(
         """
+        # 1.0.2
+        * Keep hosted videos playing when reactions refresh their embed rows.
+        * Let Discord handle Kkinstagram embeds without plugin interception.
+        * Keep selected YouTube videos inside the inline player after fullscreen.
+
         # 1.0.1
         * Improve YouTube player loading and error reporting.
         * Play hosted media inside the original image area at its default size, preserving the embed layout.
