@@ -12,15 +12,33 @@ import com.aliucord.Utils
 import com.aliucord.annotations.AliucordPlugin
 import com.aliucord.entities.Plugin
 import com.aliucord.patcher.Hook
+import com.aliucord.patcher.PreHook
 import com.discord.utilities.color.ColorCompat
+import com.discord.models.domain.Model
 import com.discord.widgets.settings.WidgetSettings
 import java.util.WeakHashMap
 
 @AliucordPlugin
 class Devices : Plugin() {
     private val rows = WeakHashMap<WidgetSettings, TextView>()
+    private val pendingCurrentReader = ThreadLocal<Model.JsonReader>()
 
     override fun start(context: Context) {
+        patcher.patch(Model.JsonReader::class.java, "nextName", emptyArray(), Hook { frame ->
+            val reader = frame.thisObject as Model.JsonReader
+            if (frame.result == "auth_session_id_hash") pendingCurrentReader.set(reader)
+            else if (pendingCurrentReader.get() === reader) pendingCurrentReader.remove()
+        })
+        patcher.patch(Model.JsonReader::class.java, "skipValue", emptyArray(), PreHook { frame ->
+            val reader = frame.thisObject as Model.JsonReader
+            if (pendingCurrentReader.get() !== reader) return@PreHook
+            pendingCurrentReader.remove()
+            val hash = runCatching { reader.nextStringOrNull() }
+            if (hash.isSuccess) {
+                hash.getOrNull()?.let(SessionApi::rememberCurrentSession)
+                frame.result = null
+            }
+        })
         patcher.patch(
             WidgetSettings::class.java,
             "onViewBound",
@@ -74,6 +92,8 @@ class Devices : Plugin() {
 
     override fun stop(context: Context) {
         patcher.unpatchAll()
+        pendingCurrentReader.remove()
+        SessionApi.clearCurrentSession()
         rows.values.forEach { row -> (row.parent as? ViewGroup)?.removeView(row) }
         rows.clear()
     }

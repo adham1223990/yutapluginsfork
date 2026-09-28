@@ -26,6 +26,7 @@ internal class SessionApi(private val expectedToken: String) {
             ?: error("Discord returned an unrecognized Devices response")
         val currentHash = body.optString("current_session_id_hash")
             .ifEmpty { body.optString("auth_session_id_hash") }
+            .ifEmpty { gatewayCurrentHash.orEmpty() }
         val sessions = mutableListOf<DeviceSession>()
         for (index in 0 until items.length()) {
             val item = items.optJSONObject(index) ?: continue
@@ -91,6 +92,16 @@ internal class SessionApi(private val expectedToken: String) {
     }
 
     companion object {
+        @Volatile private var gatewayCurrentHash: String? = null
+
+        fun rememberCurrentSession(hash: String) {
+            if (hasText(hash)) gatewayCurrentHash = hash
+        }
+
+        fun clearCurrentSession() {
+            gatewayCurrentHash = null
+        }
+
         fun token(): String? =
             StoreAuthentication.`access$getAuthState$p`(StoreStream.getAuthentication())?.token
                 ?.takeIf(::hasText)

@@ -73,15 +73,25 @@ class DevicesSheet : BottomSheet() {
     private fun render(items: List<DeviceSession>) {
         sessions.removeAllViews()
         status.text = if (items.isEmpty()) "No devices found." else "${items.size} signed-in ${if (items.size == 1) "session" else "sessions"}"
-        for (item in items) {
+        for (item in items.sortedByDescending { it.current }) {
             val card = LinearLayout(requireContext()).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(16), dp(14), dp(16), dp(14))
                 background = rounded(secondary(), 10)
             }
-            card.addView(label(item.name + if (item.current) " · This device" else "", 17f, "colorHeaderPrimary").apply {
+            card.addView(label(item.name, 17f, "colorHeaderPrimary").apply {
                 setTypeface(typeface, Typeface.BOLD)
             })
+            if (item.current) {
+                val positive = themed("colorStatusPositive", 0xFF3BA55C.toInt())
+                card.addView(label("●  Current session", 13f, "colorHeaderPrimary").apply {
+                    setTypeface(typeface, Typeface.BOLD)
+                    setTextColor(positive)
+                    setPadding(dp(10), dp(5), dp(10), dp(5))
+                    background = rounded(Color.argb(38, Color.red(positive), Color.green(positive), Color.blue(positive)), 6)
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) })
+            }
             val details = listOfNotNull(item.location?.takeIf { it != "null" },
                 item.lastUsed?.takeIf { it != "null" }?.let { "Last used: ${formatTime(it)}" }).joinToString("\n")
             if (details.isNotEmpty()) card.addView(label(details, 13f, "colorTextMuted").apply {
