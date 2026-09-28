@@ -5,15 +5,14 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
-import android.text.Spanned
-import android.text.TextPaint
 import android.view.View
+import android.view.ViewGroup
 import android.widget.TextView
 import com.discord.utilities.color.ColorCompat
 import com.lytefast.flexinput.R
 import kotlin.math.roundToInt
 
-/** One stroke for the reply elbow and the line beside the author. */
+/** Draws the reply connector down to the timestamp column. */
 internal class MessageSpine(context: Context) : View(context) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         val muted = ColorCompat.getThemedColor(context, R.b.colorTextMuted)
@@ -28,56 +27,42 @@ internal class MessageSpine(context: Context) : View(context) {
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
     }
-    private val authorPaint = TextPaint()
     private val path = Path()
-    private var text: TextView? = null
+    private var timestamp: TextView? = null
     private var reply: View? = null
 
     init {
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
     }
 
-    fun bind(text: TextView?, reply: View?) {
-        this.text = text
+    fun bind(timestamp: TextView?, reply: View?) {
+        this.timestamp = timestamp
         this.reply = reply
         invalidate()
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val text = text?.takeIf { it.visibility != GONE } ?: return
-        val layout = text.layout ?: return
-        val author = InlineAuthorText.find(text.text)?.takeIf { it.nameLength > 0 } ?: return
-        val content = text.text as Spanned
-        val authorStart = content.getSpanStart(author)
-        val authorEnd = (authorStart + author.nameLength).coerceAtMost(content.length)
-        if (authorStart < 0 || authorEnd <= authorStart) return
-
-        val firstLine = layout.getLineForOffset(authorStart)
-        val lastLine = layout.getLineForOffset(authorEnd - 1)
-        authorPaint.set(text.paint)
-        author.updateMeasureState(authorPaint)
-        val metrics = authorPaint.fontMetrics
-        val textTop = relativeTop(text) + text.totalPaddingTop
-        val top = textTop + layout.getLineBaseline(firstLine) + metrics.ascent
-        val bottom = textTop + layout.getLineBaseline(lastLine) + metrics.descent
+        val timestamp = timestamp?.takeIf { it.visibility != GONE } ?: return
+        val reply = reply?.takeIf { it.visibility != GONE } ?: return
+        val layout = timestamp.layout ?: return
+        val bottom = relativeTop(timestamp) + timestamp.totalPaddingTop +
+            layout.getLineBaseline(0) + timestamp.paint.fontMetrics.ascent -
+            6f * resources.displayMetrics.density
         val x = paint.strokeWidth / 2f
-
+        val replyCenter = relativeTop(reply) + reply.height / 2f
+        if (bottom <= replyCenter) return
+        val arrowGap = (reply.layoutParams as? ViewGroup.MarginLayoutParams)?.marginEnd?.toFloat()
+            ?: 4f * resources.displayMetrics.density
+        val radius = minOf(
+            4f * resources.displayMetrics.density,
+            width - paint.strokeWidth - arrowGap,
+            bottom - replyCenter,
+        ).coerceAtLeast(0f)
         path.reset()
-        val reply = reply?.takeIf { it.visibility != GONE }
-        if (reply != null) {
-            val replyCenter = relativeTop(reply) + reply.height / 2f
-            val radius = minOf(
-                4f * resources.displayMetrics.density,
-                width - paint.strokeWidth,
-                bottom - replyCenter,
-            ).coerceAtLeast(0f)
-            path.moveTo(width - x, replyCenter)
-            path.lineTo(x + radius, replyCenter)
-            path.quadTo(x, replyCenter, x, replyCenter + radius)
-        } else {
-            path.moveTo(x, top)
-        }
+        path.moveTo(width - x - arrowGap, replyCenter)
+        path.lineTo(x + radius, replyCenter)
+        path.quadTo(x, replyCenter, x, replyCenter + radius)
         path.lineTo(x, bottom)
         canvas.drawPath(path, paint)
     }

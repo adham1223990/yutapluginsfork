@@ -1,9 +1,11 @@
-version = "1.0.1"
+version = "1.0.2"
 description = "Recreates Discord desktop's IRC-style compact chat layout."
 
 aliucord {
     changelog.set(
         """
+        # 1.0.2
+        * Make it more like desktop-style and fix spacing issues.
         # 1.0.1
         * Rewrite the plugin entirely in Kotlin.
         * Hide avatars by default and add a Show avatars setting.

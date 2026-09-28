@@ -1,7 +1,11 @@
 package com.github.yutaplug.irc
 
 import android.content.Context
+import android.os.Bundle
+import android.text.Spannable
 import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.LeadingMarginSpan
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -22,16 +26,21 @@ import com.aliucord.patcher.PreHook
 import com.discord.utilities.color.ColorCompat
 import com.discord.utilities.mg_recycler.MGRecyclerViewHolder
 import com.discord.utilities.spans.ClickableSpan
+import com.discord.utilities.textprocessing.MessagePreprocessor
 import com.discord.utilities.view.text.SimpleDraweeSpanTextView
 import com.discord.views.ReactionView
 import com.discord.widgets.chat.list.ChatListItemMessageAccessibilityDelegate
+import com.discord.widgets.chat.list.actions.WidgetChatListActions
 import com.discord.widgets.chat.list.adapter.WidgetChatListAdapter
 import com.discord.widgets.chat.list.adapter.WidgetChatListAdapterItemMessage
 import com.discord.widgets.chat.list.adapter.WidgetChatListAdapterItemReactions
 import com.discord.widgets.chat.list.adapter.WidgetChatListItem
 import com.discord.widgets.chat.list.entries.ChatListEntry
 import com.discord.widgets.chat.list.entries.MessageEntry
+import com.discord.models.message.Message
+import com.discord.stores.StoreMessageState
 import com.facebook.drawee.span.DraweeSpanStringBuilder
+import com.discord.widgets.user.usersheet.WidgetUserSheet
 import com.lytefast.flexinput.R
 import java.lang.ref.WeakReference
 import java.text.SimpleDateFormat
@@ -51,6 +60,9 @@ class IRC : Plugin() {
     private val adapterField by lazy {
         MGRecyclerViewHolder::class.java.getDeclaredField("adapter").apply { isAccessible = true }
     }
+    private val jumboEmojiField by lazy {
+        MessagePreprocessor::class.java.getDeclaredField("shouldJumboify").apply { isAccessible = true }
+    }
 
     private var itemTextId = 0
     private var itemAvatarId = 0
@@ -62,6 +74,11 @@ class IRC : Plugin() {
     private var replyHolderId = 0
     private var replyLinkId = 0
     private var replyNameId = 0
+    private var replyAvatarId = 0
+    private var replyIconId = 0
+    private var replyLeadingId = 0
+    private var replyContentId = 0
+    private var profileActionId = 0
     private var threadHeaderId = 0
     private var threadSpineId = 0
     private var guidelineId = 0
@@ -85,13 +102,20 @@ class IRC : Plugin() {
         replyHolderId = Utils.getResId("chat_list_adapter_item_text_decorator", "id")
         replyLinkId = Utils.getResId("chat_list_adapter_item_text_decorator_reply_link_icon", "id")
         replyNameId = Utils.getResId("chat_list_adapter_item_text_decorator_reply_name", "id")
+        replyAvatarId = Utils.getResId("chat_list_adapter_item_text_decorator_avatar", "id")
+        replyIconId = Utils.getResId("chat_list_adapter_item_text_decorator_reply_icon", "id")
+        replyLeadingId = Utils.getResId("chat_list_adapter_item_reply_leading_views", "id")
+        replyContentId = Utils.getResId("chat_list_adapter_item_text_reply_content", "id")
+        profileActionId = Utils.getResId("dialog_chat_actions_profile", "id")
         threadHeaderId = Utils.getResId("thread_starter_message_header", "id")
         threadSpineId = Utils.getResId("chat_list_adapter_item_thread_embed_spine", "id")
         guidelineId = Utils.getResId("uikit_chat_guideline", "id")
         reactionContainerId = Utils.getResId("chat_list_item_reactions", "id")
         quickAddReactionId = Utils.getResId("reaction_quick_add", "id")
         avatarDecorationId = findAvatarDecorationId()
+        patchEmojiSize()
         patchInlineAuthors()
+        patchProfileAction()
 
         val configureArgs = arrayOf(Int::class.javaPrimitiveType!!, ChatListEntry::class.java)
         // Attachments and embeds use the same leading column as message text.
@@ -110,6 +134,48 @@ class IRC : Plugin() {
             compactReactions(container)
             container.post { if (container.parent != null) compactReactions(container) }
         })
+    }
+
+    private fun patchEmojiSize() {
+        patcher.patch(
+            WidgetChatListAdapterItemMessage::class.java,
+            "getMessagePreprocessor",
+            arrayOf(Long::class.javaPrimitiveType!!, Message::class.java, StoreMessageState.State::class.java),
+            Hook { frame ->
+                val preprocessor = frame.result as? MessagePreprocessor ?: return@Hook
+                jumboEmojiField.setBoolean(preprocessor, false)
+            },
+        )
+    }
+
+    private fun patchProfileAction() {
+        patcher.patch(
+            WidgetChatListActions::class.java,
+            "configureUI",
+            arrayOf(WidgetChatListActions.Model::class.java),
+            Hook { frame ->
+                val sheet = frame.thisObject as WidgetChatListActions
+                val model = frame.args[0] as? WidgetChatListActions.Model ?: return@Hook
+                val guildId = model.guild?.id ?: model.message.guildId ?: return@Hook
+                if (guildId == 0L) return@Hook
+                val authorId = model.message.author?.id ?: return@Hook
+                val channelId = model.message.channelId
+                sheet.view?.findViewById<View>(profileActionId)?.setOnClickListener {
+                    sheet.dismiss()
+                    WidgetUserSheet().apply {
+                        arguments = Bundle().apply {
+                            putLong("ARG_USER_ID", authorId)
+                            putLong("ARG_CHANNEL_ID", channelId)
+                            putLong("ARG_GUILD_ID", guildId)
+                            putSerializable(
+                                "ARG_STREAM_PREVIEW_CLICK_BEHAVIOR",
+                                WidgetUserSheet.StreamPreviewClickBehavior.TARGET_AND_LAUNCH_SPECTATE,
+                            )
+                        }
+                    }.show(sheet.parentFragmentManager, WidgetUserSheet::class.java.name)
+                }
+            },
+        )
     }
 
     private fun patchInlineAuthors() {
@@ -210,11 +276,38 @@ class IRC : Plugin() {
             loading.setText(text, TextView.BufferType.SPANNABLE)
         }
         updateLeadingCell(state)
+        compactReply(root)
         applyRootConstraints(root, state, root.findViewById(replyHolderId), root.findViewById(threadHeaderId))
         root.findViewById<View>(threadSpineId)?.visibility = View.GONE
         root.findViewById<View>(replyLinkId)?.visibility = View.GONE
         updateGuideline(root)
         if (timestampWidthPx != oldTimestampWidth) refreshAvatarLayout()
+    }
+
+    private fun compactReply(root: ConstraintLayout) {
+        root.findViewById<View>(replyAvatarId)?.visibility = View.GONE
+        (root.findViewById<View>(replyIconId) as? ImageView)?.let { icon ->
+            icon.visibility = View.VISIBLE
+            icon.background = null
+            icon.setPadding(0, 0, 0, 0)
+            (icon.layoutParams as? LinearLayout.LayoutParams)?.let { params ->
+                params.width = dp(root.context, REPLY_ICON_SIZE_DP)
+                params.height = dp(root.context, REPLY_ICON_SIZE_DP)
+                icon.layoutParams = params
+            }
+        }
+        val leading = root.findViewById<View>(replyLeadingId) as? LinearLayout ?: return
+        leading.gravity = Gravity.CENTER_VERTICAL
+        val content = root.findViewById<View>(replyContentId) as? TextView ?: return
+        val text = content.text as? Spannable ?: return
+        if (text.isEmpty()) return
+        leading.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
+        val width = leading.measuredWidth
+        for (span in text.getSpans(0, text.length, LeadingMarginSpan.Standard::class.java)) {
+            text.removeSpan(span)
+        }
+        text.setSpan(LeadingMarginSpan.Standard(width, 0), 0, text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        content.requestLayout()
     }
 
     private fun createRegularRow(
@@ -402,8 +495,11 @@ class IRC : Plugin() {
         }
         root.updateViewLayout(state.spine, spineParams)
         val loading = root.findViewById<View>(loadingTextId) as? TextView
-        val active = loading?.takeIf { isVisible(it) } ?: root.findViewById<View>(itemTextId) as? TextView
-        state.spine.bind(active, reply?.takeIf { replyVisible })
+        val active = state.timestamp ?: loading?.takeIf { isVisible(it) }
+            ?: root.findViewById<View>(itemTextId) as? TextView
+        val replyAnchor = root.findViewById<View>(replyIconId)?.takeIf { isVisible(it) } ?: reply
+        state.spine.visibility = if (replyVisible) View.VISIBLE else View.GONE
+        state.spine.bind(active, replyAnchor?.takeIf { replyVisible })
     }
 
     private fun compactReactions(container: ViewGroup) {
@@ -584,7 +680,7 @@ class IRC : Plugin() {
         context, NAME_GAP_DP + if (showAvatars()) AVATAR_GAP_DP + AVATAR_SIZE_DP else 0,
     )
 
-    private fun spineStartDp(context: Context) = bodyStartDp(context) - dp(context, NAME_GAP_DP / 2)
+    private fun spineStartDp(context: Context) = timestampColumnWidth(context) / 2
 
     private fun showAvatars() = settings.getBool(SHOW_AVATARS, false)
 
@@ -636,10 +732,11 @@ class IRC : Plugin() {
         internal const val SHOW_AVATARS = "showAvatars"
         private const val NO_CONSTRAINT = -1
         private const val DEFAULT_TIMESTAMP_WIDTH_DP = 32
-        private const val TIMESTAMP_END_PADDING_DP = 4
+        private const val TIMESTAMP_END_PADDING_DP = 2
         private const val AVATAR_GAP_DP = 6
         private const val AVATAR_SIZE_DP = 24
-        private const val NAME_GAP_DP = 6
+        private const val REPLY_ICON_SIZE_DP = 12
+        private const val NAME_GAP_DP = 3
         private const val BODY_GAP_DP = 4
         private const val BODY_BOTTOM_PADDING_DP = 2
         private const val ROW_VERTICAL_PADDING_DP = 1

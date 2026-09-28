@@ -14,6 +14,7 @@ import com.discord.widgets.chat.list.entries.BotUiComponentEntry
 import com.discord.widgets.chat.list.entries.ChatListEntry
 import com.discord.widgets.chat.list.entries.EmbedEntry
 import com.discord.widgets.botuikit.ComponentExperiments
+import com.discord.widgets.botuikit.ComponentChatListState.ComponentStoreState
 import com.discord.api.botuikit.ComponentType
 import com.discord.widgets.botuikit.ComponentStateMapper
 import com.discord.widgets.chat.list.model.WidgetChatListModelMessages
@@ -59,6 +60,31 @@ fun patchMessageItems(patcher: PatcherAPI) {
                         )
                     }
                 }
+            }
+        }
+        // Search, pins and other secondary lists disable the client's bot-row
+        // switch. CV2 messages can contain all of their visible text in that row.
+        if (param.args[16] == false && _message.isComponentV2 &&
+            result.none { it is BotUiComponentEntry } && !_message.components.isNullOrEmpty()) {
+            @Suppress("UNCHECKED_CAST")
+            val componentStates = param.args[17] as Map<Long, ComponentStoreState>
+            val mapped = ComponentStateMapper.INSTANCE.processComponentsToMessageComponents(
+                _message.components,
+                componentStates[_message.id],
+                object : ComponentExperiments {
+                    override fun isEnabled(type: ComponentType) = true
+                },
+                param.args[12] as Boolean,
+            )
+            if (mapped.isNotEmpty()) {
+                val fields = BotUiComponentV2Entry.V2Fields(state, meId, channel, guildMembers, guildRoles)
+                result.add(BotUiComponentV2Entry(
+                    _message,
+                    _message.applicationId ?: _message.author?.id ?: 0L,
+                    channel.i(),
+                    mapped.toMutableList(),
+                    fields,
+                ))
             }
         }
     }

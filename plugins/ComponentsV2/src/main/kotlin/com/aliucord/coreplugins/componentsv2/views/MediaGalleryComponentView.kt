@@ -15,11 +15,17 @@ import com.aliucord.coreplugins.componentsv2.BotUiComponentV2Entry
 import com.aliucord.coreplugins.componentsv2.ComponentV2Type
 import com.aliucord.coreplugins.componentsv2.models.MediaGalleryMessageComponent
 import com.aliucord.utils.DimenUtils.dp
+import com.aliucord.utils.ReflectUtils
 import com.aliucord.utils.ViewUtils.addTo
 import com.aliucord.widgets.LinearLayout
 import com.aliucord.wrappers.messages.AttachmentWrapper.Companion.height
 import com.aliucord.wrappers.messages.AttachmentWrapper.Companion.width
 import com.discord.api.message.attachment.MessageAttachment
+import com.discord.api.message.embed.EmbedThumbnail
+import com.discord.api.message.embed.EmbedType
+import com.discord.api.message.embed.EmbedVideo
+import com.discord.api.message.embed.MessageEmbed
+import com.discord.api.botuikit.UnfurledMediaItem
 import com.discord.utilities.color.ColorCompat
 import com.discord.utilities.display.DisplayUtils
 import com.discord.utilities.embed.EmbedResourceUtils
@@ -49,6 +55,36 @@ class MediaGalleryComponentView(ctx: Context) : ConstraintLayout(ctx), Component
     }
     private var mediaViews: List<Pair<MessageAttachment, InlineMediaView>>? = null
 
+    private fun mediaThumbnail(media: UnfurledMediaItem): EmbedThumbnail =
+        ReflectUtils.allocateInstance(EmbedThumbnail::class.java).also {
+            ReflectUtils.setField(it, "url", media.url)
+            ReflectUtils.setField(it, "proxyUrl", media.proxyUrl)
+            ReflectUtils.setField(it, "width", media.width)
+            ReflectUtils.setField(it, "height", media.height)
+        }
+
+    private fun imageEmbed(media: UnfurledMediaItem): MessageEmbed =
+        ReflectUtils.allocateInstance(MessageEmbed::class.java).also {
+            ReflectUtils.setField(it, "type", EmbedType.IMAGE)
+            ReflectUtils.setField(it, "url", media.url)
+            ReflectUtils.setField(it, "thumbnail", mediaThumbnail(media))
+        }
+
+    private fun videoEmbed(media: UnfurledMediaItem, source: MessageEmbed?): MessageEmbed {
+        val video = source?.m() ?: ReflectUtils.allocateInstance(EmbedVideo::class.java).also {
+            ReflectUtils.setField(it, "url", media.url)
+            ReflectUtils.setField(it, "proxyUrl", media.url)
+            ReflectUtils.setField(it, "width", media.width)
+            ReflectUtils.setField(it, "height", media.height)
+        }
+        return ReflectUtils.allocateInstance(MessageEmbed::class.java).also {
+            ReflectUtils.setField(it, "type", EmbedType.VIDEO)
+            ReflectUtils.setField(it, "url", source?.l() ?: media.url)
+            ReflectUtils.setField(it, "thumbnail", mediaThumbnail(media))
+            ReflectUtils.setField(it, "video", video)
+        }
+    }
+
     // This isn't pretty, but Discord actually does this in their code (EmbedResourceUtils.computeMaximumImageWidthPx)
     private fun calculateMaxWidth(contained: Boolean): Int {
         var maxPossibleWidth = DisplayUtils.getScreenSize(context).width() -
@@ -73,8 +109,14 @@ class MediaGalleryComponentView(ctx: Context) : ConstraintLayout(ctx), Component
         val maxEmbedWidth = calculateMaxWidth(component.markedContained)
         layout.removeAllViews()
         val pendingViews = mutableListOf<Pair<MessageAttachment, InlineMediaView>>()
+        val sourceVideos = entry.message.referencedMessage?.k()?.filter { it.m() != null }.orEmpty()
+        var videoIndex = 0
         component.items.forEachIndexed { index, it ->
             val media = it.media
+            val video = if (media.contentType?.startsWith("video/") == true)
+                videoEmbed(media, sourceVideos.getOrNull(videoIndex++)) else null
+            val image = if (media.contentType?.startsWith("image/") == true)
+                imageEmbed(media) else null
             // TODO: there's probably a utility to extract filename from url
             val name = media.url.split("/").last().split("?").first()
             val attachment = CV2Compat.createAttachment(
@@ -113,9 +155,13 @@ class MediaGalleryComponentView(ctx: Context) : ConstraintLayout(ctx), Component
                             startToStart = PARENT_ID
                         }
                         setOnClickListener {
-                            WidgetMedia.Companion!!.launch(context, attachment);
+                            if (video != null) WidgetMedia.Companion!!.launch(context, video)
+                            else if (image != null) WidgetMedia.Companion!!.launch(context, image)
+                            else WidgetMedia.Companion!!.launch(context, attachment)
                         }
-                        updateUIWithAttachment(attachment, width, height, true)
+                        if (video != null) updateUIWithEmbed(video, width, height, true)
+                        else if (image != null) updateUIWithEmbed(image, width, height, true)
+                        else updateUIWithAttachment(attachment, width, height, true)
                     }
                     val spoilerView = SpoilerView(context, 1).addTo(this) {
                         translationZ = 10f

@@ -1,6 +1,6 @@
 import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
 
-version = "8.9.0"
+version = "8.10.0"
 description = "Beta backport of ComponentsV2"
 
 android {
@@ -18,6 +18,13 @@ aliucord {
         
         Changelog {added marginTop}
         ======================
+        # 8.10.0
+        * Show bot Components V2 in search results and other secondary message lists
+        * Render forwarded bot messages from their message snapshots
+        * Display and submit text fields in newer bot modal dialogs
+        * Fix gallery images and videos with extensionless media URLs
+        * Prevent ViewRaw crashes on new component types
+
         # 8.9.0
         * Support Components V2 link previews from regular user messages
         * Preserve link-preview components in the message cache and ViewRaw
