@@ -1209,9 +1209,11 @@ class PlayEmbeds : Plugin() {
         val urls = listOfNotNull(embed.l(), video.c(), video.b()).filter(::isHttpUrl)
         if (urls.isEmpty() || urls.any(::requiresHostedPlayer)) return null
         // HTML pages and provider URLs are not <video> sources. If there is
-        // no actual media URL, leave the embed to Discord's normal handler.
+        // no recognizable media URL or declared media MIME type, leave the
+        // embed to Discord's normal handler.
+        val declaredKind = declaredMediaKind(video)
         return listOfNotNull(video.c(), video.b())
-            .firstNotNullOfOrNull(::resolveEmbeddedMediaUrl)
+            .firstNotNullOfOrNull { url -> resolveEmbeddedMediaUrl(url, declaredKind) }
     }
 
     /**
@@ -1219,19 +1221,44 @@ class PlayEmbeds : Plugin() {
      * actual media URL. Unwrap those generically, but only accept the result
      * when it looks like playable media, so ordinary embed links stay native.
      */
-    private fun resolveEmbeddedMediaUrl(url: String, depth: Int = 0): String? {
+    private fun resolveEmbeddedMediaUrl(url: String, declaredKind: MediaKind?, depth: Int = 0): String? {
         if (!isHttpUrl(url)) return null
         if (mediaKind(url, hasEmbedVideo = true) != null) return url
-        if (depth >= MAX_EMBED_MEDIA_REDIRECT_DEPTH) return null
+        if (depth < MAX_EMBED_MEDIA_REDIRECT_DEPTH) {
+            val uri = Uri.parse(url)
+            uri.queryParameterNames
+                .asSequence()
+                .mapNotNull(uri::getQueryParameter)
+                .filter(::isHttpUrl)
+                .firstNotNullOfOrNull { nestedUrl ->
+                    resolveEmbeddedMediaUrl(nestedUrl, declaredKind, depth + 1)
+                }
+                ?.let { return it }
+        }
 
-        val uri = Uri.parse(url)
-        return uri.queryParameterNames
-            .asSequence()
-            .mapNotNull(uri::getQueryParameter)
-            .filter(::isHttpUrl)
-            .firstNotNullOfOrNull { nestedUrl ->
-                resolveEmbeddedMediaUrl(nestedUrl, depth + 1)
+        // Some services serve real media at extensionless URLs. Trust the
+        // MIME type Discord supplied with this embed instead of a host list.
+        return if (declaredKind != null) url else null
+    }
+
+    private fun declaredMediaKind(video: Any): MediaKind? {
+        var type: Class<*>? = video.javaClass
+        while (type != null && type != Any::class.java) {
+            for (field in type.declaredFields) {
+                if (field.type != String::class.java) continue
+                try {
+                    field.isAccessible = true
+                    when ((field.get(video) as? String)?.substringBefore(';')?.trim()?.lowercase(Locale.ROOT)) {
+                        "video/mp4", "video/webm", "video/ogg", "video/quicktime" -> return MediaKind.VIDEO
+                        "audio/mp4", "audio/mpeg", "audio/ogg", "audio/webm", "audio/aac" -> return MediaKind.AUDIO
+                    }
+                } catch (_: Throwable) {
+                    // Continue through the obfuscated model's remaining fields.
+                }
             }
+            type = type.superclass
+        }
+        return null
     }
 
     private fun hostedEmbed(embed: MessageEmbed): HostedEmbed? {

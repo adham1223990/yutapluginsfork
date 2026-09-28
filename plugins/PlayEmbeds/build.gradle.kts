@@ -1,9 +1,12 @@
-version = "1.0.3"
+version = "1.0.4"
 description = "Plays direct video and audio link embeds in Discord's built-in media player."
 
 aliucord {
     changelog.set(
         """
+        # 1.0.4
+        * Play extensionless video URLs using the media type supplied in the embed, without adding service-specific host rules.
+
         # 1.0.3
         * Load YouTube's /embed/{id} endpoint directly instead of wrapping it in a synthetic iframe page.
         * Fix Spotify embeds failing to load the playable player.
