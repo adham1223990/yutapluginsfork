@@ -68,7 +68,10 @@ class BetterMessageLogger : Plugin() {
             patchDisplayModel()
             patchActions()
             databaseEnabled = settings.getBool("database", false)
-            if (databaseEnabled || File(Constants.BASE_PATH, DB_NAME).exists()) {
+            if (databaseEnabled ||
+                File(Constants.BASE_PATH, DB_NAME).exists() ||
+                File(Constants.BASE_PATH, "BetterMessageLogger").isDirectory
+            ) {
                 ensureDatabase()
             }
         } catch (error: Throwable) {
@@ -381,6 +384,7 @@ class BetterMessageLogger : Plugin() {
         database?.let { return it }
         val db = MessageLoggerDatabase(
             File(Constants.BASE_PATH, DB_NAME),
+            File(Constants.BASE_PATH, "BetterMessageLogger/$DB_NAME"),
         ) { action, error ->
             logger.error("Could not $action", error)
             if (!databaseErrorShown && running) {

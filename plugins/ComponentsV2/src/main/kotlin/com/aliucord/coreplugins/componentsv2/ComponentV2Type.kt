@@ -16,6 +16,7 @@ object ComponentV2Type {
     lateinit var FILE: ComponentType
     lateinit var SEPARATOR: ComponentType
     lateinit var CONTAINER: ComponentType
+    lateinit var LABEL: ComponentType
 
     var newValues: Array<ComponentType>? = null
     private var oldValues: Array<ComponentType>? = null
@@ -45,8 +46,9 @@ object ComponentV2Type {
         FILE = constructor.newInstance("FILE", nextIdx++, 13, FileComponent::class.java) as ComponentType
         SEPARATOR = constructor.newInstance("SEPARATOR", nextIdx++, 14, SeparatorComponent::class.java) as ComponentType
         CONTAINER = constructor.newInstance("CONTAINER", nextIdx++, 17, ContainerComponent::class.java) as ComponentType
+        LABEL = constructor.newInstance("LABEL", nextIdx++, 18, LabelComponent::class.java) as ComponentType
 
-        newValues = arrayOf(USER_SELECT, ROLE_SELECT, MENTIONABLE_SELECT, CHANNEL_SELECT, SECTION, TEXT_DISPLAY, THUMBNAIL, MEDIA_GALLERY, FILE, SEPARATOR, CONTAINER)
+        newValues = arrayOf(USER_SELECT, ROLE_SELECT, MENTIONABLE_SELECT, CHANNEL_SELECT, SECTION, TEXT_DISPLAY, THUMBNAIL, MEDIA_GALLERY, FILE, SEPARATOR, CONTAINER, LABEL)
         field.set(null, values + newValues!!)
     }
 

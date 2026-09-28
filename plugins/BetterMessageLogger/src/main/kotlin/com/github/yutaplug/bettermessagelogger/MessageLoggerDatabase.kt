@@ -11,7 +11,11 @@ import java.util.Date
 import java.util.concurrent.Executors
 
 /** One queue owns the connection, including opening, exports and closing. */
-internal class MessageLoggerDatabase(private val file: File, private val reportError: (String, Throwable) -> Unit) {
+internal class MessageLoggerDatabase(
+    private val file: File,
+    private val legacyFile: File? = null,
+    private val reportError: (String, Throwable) -> Unit,
+) {
     private val executor = Executors.newSingleThreadExecutor { task ->
         Thread(task, "BetterMessageLogger-Database").apply { isDaemon = true }
     }
@@ -36,12 +40,87 @@ internal class MessageLoggerDatabase(private val file: File, private val reportE
             db.execSQL("PRAGMA synchronous=FULL")
             db.rawQuery("PRAGMA secure_delete=ON", null).use { it.moveToFirst() }
             upgrade(db)
+            migrateFolderDatabase(db)
         } catch (error: Exception) {
             db.close()
             database = null
             throw error
         }
     }
+
+    private fun migrateFolderDatabase(db: SQLiteDatabase) {
+        val source = legacyFile?.takeIf { it.canonicalFile != file.canonicalFile } ?: return
+        if (!source.isFile) {
+            removeEmptyLegacyFolder(source)
+            return
+        }
+        // Open the complete database so SQLite recovers any pending WAL before importing it.
+        SQLiteDatabase.openDatabase(source.absolutePath, null, SQLiteDatabase.OPEN_READWRITE).use { legacy ->
+            check(legacy.version <= SCHEMA_VERSION) { "Old folder database was created by a newer BetterMessageLogger" }
+            check("message_id" in columns(legacy, "messages")) { "Unrecognized old folder database" }
+            val normalized = "message_id" in columns(legacy, "message_edits")
+            transaction(db) {
+                legacy.rawQuery("SELECT * FROM messages", null).use { cursor ->
+                    while (cursor.moveToNext()) {
+                        val incoming = readRecord(cursor)
+                        val history = if (normalized) {
+                            readHistory(legacy, incoming.id)
+                        } else {
+                            cursor.string("edits").orEmpty().split('\u001e').mapNotNull { entry ->
+                                val separator = entry.indexOf('\u001f')
+                                if (separator < 0) return@mapNotNull null
+                                val time = entry.substring(0, separator).toLongOrNull() ?: return@mapNotNull null
+                                MessageEdit(time, entry.substring(separator + 1))
+                            }
+                        }
+                        if (!incoming.deleted && history.isEmpty()) continue
+                        val current = db
+                            .rawQuery(
+                                "SELECT * FROM messages WHERE message_id = ?",
+                                arrayOf(incoming.id.toString()),
+                            ).use { if (it.moveToFirst()) readRecord(it) else null }
+                        val latest = if (current != null &&
+                            (current.editedTimestamp ?: current.timestamp) >=
+                            (incoming.editedTimestamp ?: incoming.timestamp)
+                        ) {
+                            current
+                        } else {
+                            incoming
+                        }
+                        val edits = (readHistory(db, incoming.id) + history).distinct().sortedBy { it.timestamp }
+                        db.delete("message_edits", "message_id = ?", arrayOf(incoming.id.toString()))
+                        upsert(
+                            db,
+                            latest.copy(
+                                deleted = incoming.deleted || current?.deleted == true,
+                                deletedTimestamp = current?.deletedTimestamp ?: incoming.deletedTimestamp,
+                                edits = edits,
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+        // Remove the old files only after the import commits and its connection closes.
+        check(SQLiteDatabase.deleteDatabase(source)) { "Could not remove migrated folder database" }
+        removeEmptyLegacyFolder(source)
+    }
+
+    private fun removeEmptyLegacyFolder(source: File) {
+        source.parentFile?.takeIf { it.name == "BetterMessageLogger" && it.list()?.isEmpty() == true }?.let {
+            check(it.delete()) { "Could not remove empty BetterMessageLogger folder" }
+        }
+    }
+
+    private fun readHistory(db: SQLiteDatabase, id: Long): List<MessageEdit> = db
+        .rawQuery(
+            "SELECT edit_timestamp, content FROM message_edits WHERE message_id = ? ORDER BY position",
+            arrayOf(id.toString()),
+        ).use { cursor ->
+            val result = ArrayList<MessageEdit>()
+            while (cursor.moveToNext()) result.add(MessageEdit(cursor.getLong(0), cursor.getString(1)))
+            result
+        }
 
     private fun upgrade(db: SQLiteDatabase) {
         check(db.version <= SCHEMA_VERSION) { "Database was created by a newer BetterMessageLogger" }

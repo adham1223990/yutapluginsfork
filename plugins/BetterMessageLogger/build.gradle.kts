@@ -1,11 +1,15 @@
-version = "1.0.19"
+version = "1.0.20"
 description = "Keeps deleted messages and edit history visible in Discord chats."
 
 aliucord {
     changelog.set(
         """
+        # 1.0.20
+        * Database migration
+
         # 1.0.19
         * Modernize pop-ups in settings
+
         # 1.0.18
         * Rewrite the plugin entirely in Kotlin.
         * Modernize settings and the edit-history popup with selectable versions and individual copy actions.

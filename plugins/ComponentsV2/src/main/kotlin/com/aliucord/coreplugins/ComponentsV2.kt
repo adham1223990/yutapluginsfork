@@ -9,6 +9,8 @@ import com.aliucord.annotations.AliucordPlugin
 import com.aliucord.coreplugins.componentsv2.ComponentV2Type
 import com.aliucord.coreplugins.componentsv2.models.*
 import com.aliucord.coreplugins.componentsv2.patchMessageItems
+import com.aliucord.coreplugins.componentsv2.patchModalLabels
+import com.aliucord.coreplugins.componentsv2.patchMessageSnapshots
 import com.aliucord.coreplugins.componentsv2.patchComponentEmbeds
 import com.aliucord.coreplugins.componentsv2.views.*
 import com.aliucord.entities.Plugin
@@ -34,11 +36,14 @@ val Message.isComponentV2 get() = ((flags ?: 0) shr 15) and 1 == 1L
 @Suppress("unused")
 class ComponentsV2 : Plugin() {
     override fun start(context: Context) {
+        try {
         compat(patcher)
         patchComponentEmbeds(patcher)
         XposedBridge.makeClassInheritable(BotUiComponentEntry::class.java)
         // https://github.com/LSPosed/LSPlant/issues/41
         patchMessageItems(patcher)
+        patchModalLabels(patcher)
+        patchMessageSnapshots(patcher)
 
         patcher.instead<ComponentStateMapper>(
             "toMessageLayoutComponent",
@@ -157,6 +162,13 @@ class ComponentsV2 : Plugin() {
 
         patcher.after<Message>("shouldShowReplyPreviewAsAttachment") { param ->
             if (this.isComponentV2) param.result = true
+        }
+        } catch (error: Throwable) {
+            // A hook failure during startup otherwise prevents Aliucord from
+            // opening, before its normal crash reporter can record anything.
+            logger.error("ComponentsV2 failed to start", error)
+            runCatching { patcher.unpatchAll() }
+            runCatching { stopCompat() }
         }
     }
 

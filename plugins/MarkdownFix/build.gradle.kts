@@ -1,8 +1,10 @@
-version = "1.0.11"
+version = "1.0.12"
 description = "Backports Discord's newer Markdown formatting to chat messages."
 aliucord {
     changelog.set(
         """
+        # 1.0.12
+        * Add support for hex colors
         # 1.0.11
         * Modernize settings pop-ups with rounded layouts and styled buttons
         * Add inline validation, keyboard Done support, and a live bullet-color preview

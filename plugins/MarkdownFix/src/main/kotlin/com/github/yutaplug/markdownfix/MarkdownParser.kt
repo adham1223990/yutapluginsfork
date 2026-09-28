@@ -44,6 +44,7 @@ internal class MarkdownParser(private val settings: SettingsAPI, private val gam
         if (blocks) parser.addRule(rules.createCodeBlockRule())
         parser.addRule(rules.createInlineCodeRule())
         parser.addRule(rules.createSpoilerRule())
+        parser.addRule(HexColorRule())
         if (maskedLinks && depth < MAX_BLOCK_DEPTH) parser.addRule(MaskedLinkRule(depth))
         if (urls) {
             parser.addRule(rules.createUrlNoEmbedRule())
@@ -170,6 +171,36 @@ private class EscapeRule : MessageRule(Pattern.compile("^\\\\([^0-9A-Za-z\\s])")
         parser: Parser<MessageRenderContext, in MessageNode, MessageParseState>,
         state: MessageParseState,
     ): MessageSpec = MessageSpec(b.a.t.b.a.a<MessageRenderContext>(match.group(1).orEmpty()), state)
+}
+
+/** Match complete hex tokens without coloring a prefix of a longer value. */
+private class HexColorRule : MessageRule(Pattern.compile("^#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6})(?![0-9a-fA-F])")) {
+    override fun match(source: CharSequence, previous: String?, state: MessageParseState): Matcher? =
+        if (previous?.lastOrNull()?.isLetterOrDigit() == true) null else super.match(source, previous, state)
+
+    override fun parse(
+        match: Matcher,
+        parser: Parser<MessageRenderContext, in MessageNode, MessageParseState>,
+        state: MessageParseState,
+    ): MessageSpec = MessageSpec(HexColorNode(match.group(), Color.parseColor(match.group())), state)
+}
+
+private class HexColorNode(private val text: String, private val color: Int) : MessageNode() {
+    override fun render(builder: SpannableStringBuilder, context: MessageRenderContext) {
+        val start = builder.length
+        builder.append(text)
+        val flags = Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        builder.setSpan(ForegroundColorSpan(color), start, builder.length, flags)
+        builder.setSpan(
+            android.text.style.BackgroundColorSpan(
+                Color.argb(25, Color.red(color), Color.green(color), Color.blue(color)),
+            ),
+            start,
+            builder.length,
+            flags,
+        )
+        builder.setSpan(StyleSpan(Typeface.BOLD), start, builder.length, flags)
+    }
 }
 
 private class ListItemNode(private val level: Int, private val newline: Boolean) : MessageNode() {

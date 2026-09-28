@@ -13,6 +13,7 @@ import com.aliucord.utils.GsonUtils
 import com.aliucord.utils.GsonUtils.toJson
 import com.aliucord.utils.ReflectUtils
 import com.discord.api.botuikit.ComponentType
+import com.google.gson.TypeAdapter
 import com.discord.api.botuikit.gson.ComponentRuntimeTypeAdapter
 import com.discord.api.botuikit.gson.ComponentTypeTypeAdapter
 import com.discord.api.message.attachment.MessageAttachment
@@ -20,6 +21,7 @@ import com.discord.models.domain.Model
 import com.discord.models.message.Message
 import com.discord.widgets.chat.list.adapter.WidgetChatListAdapterItemMessage
 import com.google.gson.stream.JsonReader
+import com.google.gson.stream.JsonWriter
 import java.io.File
 import b.a.b.a as TypeAdapterRegistrar
 import b.i.d.c as FieldNamingPolicy
@@ -40,18 +42,25 @@ fun ComponentsV2.compat(patcher: PatcherAPI) {
     val cuteGson = GsonBuilder().run {
         c = FieldNamingPolicy.m // LOWER_CASE_WITH_UNDERSCORES
         TypeAdapterRegistrar.a(this)
+        b(ComponentType::class.java, object : TypeAdapter<ComponentType>() {
+            override fun write(writer: JsonWriter, value: ComponentType?) {
+                if (value == null) writer.s() else writer.H(value.name)
+            }
+            override fun read(reader: JsonReader): ComponentType =
+                ComponentType.valueOf(reader.J())
+        })
         e.add(Model.TypeAdapterFactory())
         a().apply {
             ReflectUtils.setField(this, "k", true)
         }
     }
-    patcher.patch(GsonUtils::class.java.getDeclaredMethod("toJsonPretty", Object::class.java))
-    { (param, obj: Any) ->
+    patcher.patch(GsonUtils::class.java.getDeclaredMethod("toJsonPretty", Object::class.java), com.aliucord.patcher.PreHook { param ->
+        val obj = param.args[0]
         if (obj is Message && (obj.isComponentV2 || obj.embeds?.any {
                 !ComponentEmbeds.get(it).isNullOrEmpty()
             } == true))
             param.result = cuteGson.toJson(obj)
-    }
+    })
 
     // add cv2 tag
     patcher.after<WidgetChatListAdapterItemMessage>("configureItemTag", Message::class.java, Boolean::class.javaPrimitiveType!!)
@@ -97,6 +106,11 @@ private fun patchGson(patcher: PatcherAPI) {
     { (_, jsonReader: JsonReader) ->
         val type: Int = b.c.a.a0.d.n1(jsonReader)
         ComponentType.values().find { it.type == type } ?: ComponentType.UNKNOWN
+    }
+    patcher.instead<ComponentTypeTypeAdapter>("write", JsonWriter::class.java, Object::class.java)
+    { (_, writer: JsonWriter, value: Any?) ->
+        val type = value as? ComponentType
+        if (type == null) writer.s() else writer.A(type.type.toLong())
     }
 }
 
