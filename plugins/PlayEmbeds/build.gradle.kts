@@ -1,9 +1,17 @@
-version = "1.0.2"
+version = "1.0.3"
 description = "Plays direct video and audio link embeds in Discord's built-in media player."
 
 aliucord {
     changelog.set(
         """
+        # 1.0.3
+        * Load YouTube's /embed/{id} endpoint directly instead of wrapping it in a synthetic iframe page.
+        * Fix Spotify embeds failing to load the playable player.
+        * Keep YouTube playback active when adding reactions refreshes the message.
+        * Replace the entire YouTube embed card with the player again.
+        * Fix touch handling so GIFs and other embeds can be tapped and opened normally.
+        * Avoid Kkinstagram-specific handling and leave Discord-native embeds untouched.
+
         # 1.0.2
         * Keep hosted videos playing when reactions refresh their embed rows.
         * Let Discord handle Kkinstagram embeds without plugin interception.

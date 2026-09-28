@@ -12,6 +12,7 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewParent
 import android.view.WindowManager
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
@@ -22,6 +23,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.ImageView
+import androidx.constraintlayout.widget.Barrier
 import androidx.constraintlayout.widget.ConstraintLayout
 import com.aliucord.Utils
 import com.aliucord.annotations.AliucordPlugin
@@ -33,7 +35,6 @@ import com.discord.api.message.embed.MessageEmbed
 import com.discord.player.MediaSource
 import com.discord.player.MediaType
 import com.discord.utilities.embed.EmbedResourceUtils
-import com.discord.utilities.uri.UriHandler
 import com.discord.widgets.chat.list.adapter.WidgetChatListAdapterItemEmbed
 import com.discord.widgets.chat.list.adapter.WidgetChatListAdapter
 import com.discord.widgets.chat.list.entries.ChatListEntry
@@ -50,13 +51,13 @@ class PlayEmbeds : Plugin() {
     private val hostedEmbeds = WeakHashMap<ViewGroup, MessageEmbed>()
     private val hostedPlayers = WeakHashMap<ViewGroup, HostedPlayerState>()
     private val embedRowKeys = WeakHashMap<ViewGroup, Pair<Long, Int>>()
+    private val searchEmbedClicks = WeakHashMap<ViewGroup, SearchEmbedClick>()
     private val inlineVideoPlayers = WeakHashMap<ViewGroup, InlineVideoState>()
     private val spotifyPlayButtons = WeakHashMap<ViewGroup, ImageView>()
     private val fullscreenPlayers = WeakHashMap<WebView, FullscreenState>()
 
     override fun start(context: Context) {
         patchEmbedRows()
-        patchMediaLinks()
         patchNativeHostedLaunches()
     }
 
@@ -102,41 +103,13 @@ class PlayEmbeds : Plugin() {
                 val adapter = getAdapter.invoke(null, item) as WidgetChatListAdapter
                 val handler = adapter.eventHandler
                 if (handler.javaClass.name == "com.discord.widgets.search.results.WidgetSearchResults\$SearchResultAdapterEventHandler") {
-                    // Search previews navigate to the message; they must not
-                    // install playback mappings or intercept media clicks.
-                    setClickListeners(item.itemView, View.OnClickListener {
-                        handler.onMessageClicked(entry.message, entry.isThreadStarterMessage)
-                    })
+                    embedContainers(item.itemView).forEach { container ->
+                        searchEmbedClicks[container] = SearchEmbedClick(handler, entry)
+                    }
                     return@Hook
                 }
                 val link = embedLink(entry.embed) ?: return@Hook
                 attachMediaClickHandlers(item.itemView, link)
-            },
-        )
-    }
-
-    /**
-     * Embed titles and media previews are normally routed through UriHandler.
-     * Intercepting only URLs that look like media keeps ordinary web links unchanged.
-     */
-    private fun patchMediaLinks() {
-        val handleOrUntrusted = UriHandler::class.java.getDeclaredMethod(
-            "handleOrUntrusted",
-            Context::class.java,
-            String::class.java,
-            String::class.java,
-        )
-
-        patcher.patch(
-            handleOrUntrusted,
-            PreHook { frame ->
-                val context = frame.args.getOrNull(0) as? Context ?: return@PreHook
-                val url = frame.args.getOrNull(1) as? String ?: return@PreHook
-                val media = mediaLink(url)
-                if (media != null) {
-                    openInPlayer(context, media)
-                    frame.setResult(null)
-                }
             },
         )
     }
@@ -175,6 +148,11 @@ class PlayEmbeds : Plugin() {
             PreHook { frame ->
                 val view = frame.args.getOrNull(0) as? View ?: return@PreHook
                 val container = findHostedContainer(view)
+                container?.let { searchEmbedClicks[it] }?.let { click ->
+                    click.handler.onMessageClicked(click.entry.message, click.entry.isThreadStarterMessage)
+                    frame.setResult(null)
+                    return@PreHook
+                }
                 val embed = container?.let { hostedEmbeds[it] }
                 if (container != null && embed != null && genericVideoUrl(embed) != null) {
                     playInlineVideoEmbed(container, embed)
@@ -206,19 +184,22 @@ class PlayEmbeds : Plugin() {
             onClick,
             PreHook { frame ->
                 val embed = messageEmbedField(frame.thisObject) ?: return@PreHook
+                val source = frame.args.getOrNull(0) as? View
+                    ?: viewGroupField(frame.thisObject)
+                    ?: return@PreHook
+                val container = findHostedContainer(source)
+                container?.let { searchEmbedClicks[it] }?.let { click ->
+                    click.handler.onMessageClicked(click.entry.message, click.entry.isThreadStarterMessage)
+                    frame.setResult(null)
+                    return@PreHook
+                }
                 if (genericVideoUrl(embed) != null) {
-                    val source = frame.args.getOrNull(0) as? View
-                        ?: viewGroupField(frame.thisObject)
-                        ?: return@PreHook
-                    val container = findHostedContainer(source) ?: return@PreHook
-                    playInlineVideoEmbed(container, embed)
+                    val target = container ?: return@PreHook
+                    playInlineVideoEmbed(target, embed)
                     frame.setResult(null)
                     return@PreHook
                 }
                 val hosted = hostedEmbed(embed) ?: return@PreHook
-                val source = viewGroupField(frame.thisObject)
-                    ?: frame.args.getOrNull(0) as? View
-                    ?: return@PreHook
                 if (!openHostedEmbed(source, hosted)) return@PreHook
                 frame.setResult(null)
             },
@@ -280,7 +261,6 @@ class PlayEmbeds : Plugin() {
             if (link is EmbedLink.Hosted) {
                 link.embed.sourceEmbed?.let { hostedEmbeds[container] = it }
             }
-            setClickListeners(container, listener)
             if (link is EmbedLink.Hosted && link.embed.provider == HostedProvider.SPOTIFY) {
                 addSpotifyPlayButton(container, listener)
             }
@@ -288,12 +268,16 @@ class PlayEmbeds : Plugin() {
     }
 
     private fun resetEmbedContainer(container: ViewGroup) {
+        val replacedCard = hostedPlayers[container]?.replacement?.originalCard
         removeHostedPlayer(container)
         removeInlineVideoPlayer(container)
-        removeSpotifyPlayButton(container)
-        embedLinks.remove(container)
-        hostedEmbeds.remove(container)
-        embedRowKeys.remove(container)
+        listOfNotNull(container, replacedCard).forEach { view ->
+            removeSpotifyPlayButton(view)
+            embedLinks.remove(view)
+            hostedEmbeds.remove(view)
+            embedRowKeys.remove(view)
+            searchEmbedClicks.remove(view)
+        }
     }
 
     private fun embedLinkForView(view: View): EmbedLink? {
@@ -318,7 +302,6 @@ class PlayEmbeds : Plugin() {
                 val container = findHostedContainer(view) ?: return
                 playInlineVideoEmbed(container, link.embed)
             }
-            is EmbedLink.Direct -> openInPlayer(view.context, link.media)
             is EmbedLink.Hosted -> openHostedEmbed(view, link.embed)
         }
     }
@@ -333,17 +316,6 @@ class PlayEmbeds : Plugin() {
             containers.add(root)
         }
         return containers
-    }
-
-    private fun setClickListeners(view: View, listener: View.OnClickListener) {
-        if (view is WebView) return
-        if (view.id == Utils.getResId("chat_list_item_embed_spoiler", "id")) return
-        view.setOnClickListener(listener)
-        if (view is ViewGroup) {
-            for (index in 0 until view.childCount) {
-                setClickListeners(view.getChildAt(index), listener)
-            }
-        }
     }
 
     private fun findHostedContainer(view: View): ViewGroup? {
@@ -427,6 +399,77 @@ class PlayEmbeds : Plugin() {
         return true
     }
 
+    private fun requestAncestorsDisallowIntercept(view: View, disallow: Boolean) {
+        var ancestor: ViewParent? = view.parent
+        while (ancestor != null) {
+            ancestor.requestDisallowInterceptTouchEvent(disallow)
+            ancestor = (ancestor as? View)?.parent
+        }
+    }
+
+    private fun wrapEmbedForHostedPlayer(container: ViewGroup): HostedEmbedReplacement? {
+        val originalParent = container.parent as? ViewGroup ?: return null
+        val originalIndex = originalParent.indexOfChild(container)
+        val originalLayoutParams = container.layoutParams ?: return null
+        val originalId = container.id
+        val width = container.width
+        val height = container.height
+        if (originalIndex < 0 || originalId == View.NO_ID || width <= 0 || height <= 0) return null
+
+        val wrapper = FrameLayout(container.context).apply {
+            id = originalId
+            minimumWidth = maxOf(container.minimumWidth, width)
+            minimumHeight = maxOf(container.minimumHeight, height)
+            elevation = container.elevation
+            clipChildren = container.clipChildren
+            clipToPadding = container.clipToPadding
+            clipToOutline = container.clipToOutline
+            container.background?.constantState
+                ?.newDrawable(container.resources)
+                ?.mutate()
+                ?.let { background = it }
+        }
+
+        originalParent.removeViewAt(originalIndex)
+        container.id = View.generateViewId()
+        originalParent.addView(wrapper, originalIndex, originalLayoutParams)
+        wrapper.addView(
+            container,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        moveEmbedViewState(container, wrapper)
+        return HostedEmbedReplacement(
+            wrapper,
+            originalParent,
+            originalIndex,
+            originalLayoutParams,
+            container,
+            originalId,
+            width,
+            height,
+        )
+    }
+
+    private fun moveEmbedViewState(from: ViewGroup, to: ViewGroup) {
+        embedLinks.remove(from)?.let { embedLinks[to] = it }
+        hostedEmbeds.remove(from)?.let { hostedEmbeds[to] = it }
+        embedRowKeys.remove(from)?.let { embedRowKeys[to] = it }
+        searchEmbedClicks.remove(from)?.let { searchEmbedClicks[to] = it }
+        spotifyPlayButtons.remove(from)?.let { spotifyPlayButtons[to] = it }
+    }
+
+    private fun copyLayoutParams(params: ViewGroup.LayoutParams): ViewGroup.LayoutParams {
+        return when (params) {
+            is ConstraintLayout.LayoutParams -> ConstraintLayout.LayoutParams(params)
+            is FrameLayout.LayoutParams -> FrameLayout.LayoutParams(params)
+            is ViewGroup.MarginLayoutParams -> ViewGroup.MarginLayoutParams(params)
+            else -> ViewGroup.LayoutParams(params)
+        }
+    }
+
     /**
      * YouTube and SoundCloud URLs are webpages, not progressive media files.
      * Add their provider player to the embed itself instead of opening a
@@ -443,9 +486,15 @@ class PlayEmbeds : Plugin() {
                 loadHostedPlayer(existing, embed)
                 return
             }
+            val replacedCard = state.replacement?.originalCard
             removeHostedPlayer(container)
+            if (replacedCard != null) {
+                openHostedEmbed(replacedCard, embed)
+                return
+            }
         }
 
+        val replaceWholeEmbed = embed.provider == HostedProvider.YOUTUBE
         val imageContainer = container.findViewById<View>(Utils.getResId("embed_image_container", "id"))
         val inlineMedia = container.findViewById<View>(Utils.getResId("embed_inline_media", "id"))
         val content = container.findViewById<View>(Utils.getResId("chat_list_item_embed_content", "id"))
@@ -457,39 +506,87 @@ class PlayEmbeds : Plugin() {
             else -> container.findViewById<View>(Utils.getResId("chat_list_item_embed_image_thumbnail", "id"))
                 ?.takeIf { it.visibility == View.VISIBLE }
         } ?: return
-        val playerParent = preview.parent as? ViewGroup ?: return
-        val width = preview.width.takeIf { it > 0 }
-            ?: preview.layoutParams.width.takeIf { it > 0 }
-            ?: return
-        val height = preview.height.takeIf { it > 0 }
-            ?: preview.layoutParams.height.takeIf { it > 0 }
-            ?: return
-        val playerParams = when (playerParent) {
-            is ConstraintLayout -> ConstraintLayout.LayoutParams(preview.layoutParams as ConstraintLayout.LayoutParams)
-            is FrameLayout -> FrameLayout.LayoutParams(preview.layoutParams)
-            else -> ViewGroup.LayoutParams(preview.layoutParams)
-        }.apply {
-            this.width = width
-            this.height = height
+        val replacement = if (replaceWholeEmbed) wrapEmbedForHostedPlayer(container) else null
+        val playerParent = replacement?.wrapper ?: (preview.parent as? ViewGroup ?: return)
+        val playerContainer = replacement?.wrapper ?: container
+        val compactSpotify = embed.provider == HostedProvider.SPOTIFY &&
+            preview.id == Utils.getResId("chat_list_item_embed_image_thumbnail", "id") &&
+            playerParent is ConstraintLayout && content?.visibility == View.VISIBLE
+        val previousMinimumWidth = playerParent.minimumWidth
+        val width = if (replacement != null) {
+            ViewGroup.LayoutParams.MATCH_PARENT
+        } else {
+            preview.width.takeIf { it > 0 }
+                ?: preview.layoutParams.width.takeIf { it > 0 }
+                ?: return
+        }
+        val height = if (replacement != null) {
+            ViewGroup.LayoutParams.MATCH_PARENT
+        } else {
+            preview.height.takeIf { it > 0 }
+                ?: preview.layoutParams.height.takeIf { it > 0 }
+                ?: return
+        }
+        if (compactSpotify) {
+            playerParent.minimumWidth = maxOf(
+                previousMinimumWidth,
+                EmbedResourceUtils.INSTANCE.computeMaximumImageWidthPx(container.context),
+            )
+        }
+        val dividerId = Utils.getResId("chat_list_item_embed_divider", "id")
+        val bottomBarrier = if (compactSpotify) {
+            Barrier(container.context).apply {
+                id = View.generateViewId()
+                type = Barrier.BOTTOM
+                referencedIds = intArrayOf(preview.id, content!!.id)
+            }.also { playerParent.addView(it, ConstraintLayout.LayoutParams(0, 0)) }
+        } else null
+        val playerParams = if (replacement != null) {
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            )
+        } else if (bottomBarrier != null) {
+            val maxPlayerWidth = maxOf(
+                dp(container.context, 1),
+                EmbedResourceUtils.INSTANCE.computeMaximumImageWidthPx(container.context) -
+                    (container.findViewById<View>(dividerId)?.width ?: 0),
+            )
+            ConstraintLayout.LayoutParams(maxPlayerWidth, dp(container.context, spotifyPlayerHeight(embed.url))).apply {
+                startToEnd = dividerId
+                endToEnd = ConstraintLayout.LayoutParams.PARENT_ID
+                horizontalBias = 0f
+                topToBottom = bottomBarrier.id
+                topMargin = dp(container.context, 8)
+                bottomToBottom = ConstraintLayout.LayoutParams.PARENT_ID
+                bottomMargin = dp(container.context, 8)
+            }
+        } else {
+            when (playerParent) {
+                is ConstraintLayout -> ConstraintLayout.LayoutParams(preview.layoutParams as ConstraintLayout.LayoutParams)
+                is FrameLayout -> FrameLayout.LayoutParams(preview.layoutParams)
+                else -> ViewGroup.LayoutParams(preview.layoutParams)
+            }.apply {
+                this.width = width
+                this.height = height
+            }
         }
 
         val webView = object : WebView(container.context) {
             override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-                if (embed.provider != HostedProvider.YOUTUBE) {
-                    return super.dispatchTouchEvent(event)
-                }
-
-                // Keep seeking inside the iframe from becoming a swipe of
-                // Discord's panels (or a scroll of the surrounding chat).
+                // Some Discord/device-specific parent containers don't reliably
+                // propagate this request through the full hierarchy. Request it
+                // directly from every ancestor so seekbar drags stay with YouTube
+                // instead of becoming panel/chat swipes.
                 val finished = event.actionMasked == MotionEvent.ACTION_UP ||
                     event.actionMasked == MotionEvent.ACTION_CANCEL
-                if (!finished) parent?.requestDisallowInterceptTouchEvent(true)
+                requestAncestorsDisallowIntercept(this, !finished)
                 return try {
                     super.dispatchTouchEvent(event)
                 } finally {
-                    // WebView can change interception while handling an event.
-                    // Hold it for this gesture, then release it when finished.
-                    parent?.requestDisallowInterceptTouchEvent(!finished)
+                    // Reassert after WebView's own dispatch; release all parents
+                    // only once the gesture ends.
+                    requestAncestorsDisallowIntercept(this, !finished)
                 }
             }
         }
@@ -552,10 +649,12 @@ class PlayEmbeds : Plugin() {
                 hideFullscreen(webView)
             }
         }
-        // Keep the original preview in the layout to preserve Discord's image
-        // dimensions and constraints. Overlay only its media area, not the card.
+        // YouTube replaces the full embed card; other hosted players stay within
+        // Discord's original preview area and preserve the surrounding metadata.
         val previousVisibility = ArrayList<Pair<View, Int>>()
-        if (playerParent is ConstraintLayout) {
+        if (replacement != null || compactSpotify) {
+            // Keep the artwork and metadata visible above the playable panel.
+        } else if (playerParent is ConstraintLayout) {
             previousVisibility.add(preview to preview.visibility)
             preview.visibility = View.INVISIBLE
         } else {
@@ -565,41 +664,53 @@ class PlayEmbeds : Plugin() {
                 if (child.visibility == View.VISIBLE) child.visibility = View.INVISIBLE
             }
         }
-        hostedPlayers[container] = HostedPlayerState(webView, playerParent, previousVisibility, embed.url)
+        hostedPlayers[playerContainer] = HostedPlayerState(
+            webView,
+            playerParent,
+            previousVisibility,
+            embed.url,
+            bottomBarrier,
+            previousMinimumWidth,
+            replacement,
+        )
         playerParent.addView(webView, playerParams)
         webView.bringToFront()
-        container.requestLayout()
+        playerContainer.requestLayout()
         loadHostedPlayer(webView, embed)
     }
 
     private fun loadHostedPlayer(webView: WebView, embed: HostedEmbed) {
         val appOrigin = "https://${webView.context.packageName.lowercase(Locale.ROOT)}"
-        val url = hostedPlayerUrl(embed, appOrigin)
+        val url = hostedPlayerUrl(embed)
         if (embed.provider == HostedProvider.YOUTUBE) {
-            // An iframe keeps the embedding origin/referrer available throughout
-            // player initialization, including on redirects and frame reloads.
-            val html = """
-                <!doctype html>
-                <html>
-                  <head>
-                    <meta charset="utf-8">
-                    <meta name="viewport" content="width=device-width, initial-scale=1">
-                    <meta name="referrer" content="strict-origin-when-cross-origin">
-                    <style>
-                      html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:black}
-                      iframe{display:block;width:100%;height:100%;border:0}
-                    </style>
-                  </head>
-                  <body>
-                    <iframe src="${escapeHtmlAttribute(url)}" title="YouTube video player"
-                      allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
-                      referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
-                  </body>
-                </html>
-            """
-            webView.loadDataWithBaseURL("$appOrigin/", html, "text/html", "UTF-8", null)
+            // Load the embed endpoint as the WebView's page rather than nesting
+            // it in a synthetic iframe document. Keep the app origin as Referer
+            // for YouTube's player identity checks.
+            webView.loadUrl(url, mapOf("Referer" to "$appOrigin/"))
         } else {
-            webView.loadUrl(url)
+            if (embed.provider == HostedProvider.SPOTIFY) {
+                val html = """
+                    <!doctype html>
+                    <html>
+                      <head>
+                        <meta charset="utf-8">
+                        <meta name="viewport" content="width=device-width, initial-scale=1">
+                        <style>
+                          html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#121212}
+                          iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
+                        </style>
+                      </head>
+                      <body>
+                        <iframe src="${escapeHtmlAttribute(url)}" title="Spotify player"
+                          allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
+                          allowfullscreen></iframe>
+                      </body>
+                    </html>
+                """
+                webView.loadDataWithBaseURL("https://open.spotify.com/", html, "text/html", "UTF-8", null)
+            } else {
+                webView.loadUrl(url)
+            }
         }
     }
 
@@ -824,16 +935,34 @@ class PlayEmbeds : Plugin() {
 
     private fun removeHostedPlayer(container: ViewGroup) {
         val state = hostedPlayers.remove(container) ?: return
+        val replacement = state.replacement
         val webView = state.webView
         hideFullscreen(webView)
         webView.stopLoading()
         webView.loadUrl("about:blank")
         (webView.parent as? ViewGroup)?.removeView(webView)
         webView.destroy()
+        state.extraView?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        state.parent.minimumWidth = state.previousMinimumWidth
         state.previousVisibility.forEach { (view, visibility) ->
             view.visibility = visibility
         }
-        container.requestLayout()
+        if (replacement != null) {
+            (replacement.originalCard.parent as? ViewGroup)?.removeView(replacement.originalCard)
+            replacement.wrapper.id = View.generateViewId()
+            replacement.originalCard.id = replacement.originalId
+            (replacement.wrapper.parent as? ViewGroup)?.removeView(replacement.wrapper)
+            val insertionIndex = replacement.originalIndex.coerceIn(0, replacement.originalParent.childCount)
+            replacement.originalParent.addView(
+                replacement.originalCard,
+                insertionIndex,
+                replacement.originalLayoutParams,
+            )
+            moveEmbedViewState(replacement.wrapper, replacement.originalCard)
+            replacement.originalParent.requestLayout()
+        } else {
+            container.requestLayout()
+        }
     }
 
     @Suppress("DEPRECATION")
@@ -848,6 +977,10 @@ class PlayEmbeds : Plugin() {
             callback.onCustomViewHidden()
             return
         }
+        val playerParent = webView.parent as? ViewGroup
+        val hostedReplacement = hostedPlayers.values
+            .firstOrNull { it.webView === webView }
+            ?.replacement
         (customView.parent as? ViewGroup)?.removeView(customView)
         val previousSystemUiVisibility = decor.systemUiVisibility
         val wasFullscreen = activity.window.attributes.flags and
@@ -891,6 +1024,9 @@ class PlayEmbeds : Plugin() {
             callback,
             previousSystemUiVisibility,
             wasFullscreen,
+            playerParent,
+            webView.layoutParams?.let(::copyLayoutParams),
+            hostedReplacement,
         )
     }
 
@@ -905,6 +1041,29 @@ class PlayEmbeds : Plugin() {
             state.activity.window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
         }
         state.callback.onCustomViewHidden()
+        webView.post {
+            if (webView.parent === state.playerParent) {
+                state.playerLayoutParams?.let { webView.layoutParams = copyLayoutParams(it) }
+            }
+            state.embedReplacement?.let { replacement ->
+                val wrapper = replacement.wrapper
+                if (wrapper.parent != null) {
+                    wrapper.layoutParams = copyLayoutParams(replacement.originalLayoutParams).apply {
+                        width = replacement.originalWidth
+                        height = replacement.originalHeight
+                    }
+                    wrapper.minimumWidth = replacement.originalWidth
+                    wrapper.minimumHeight = replacement.originalHeight
+                    replacement.originalCard.layoutParams = FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                    )
+                    wrapper.requestLayout()
+                }
+            }
+            state.playerParent?.requestLayout()
+            state.playerParent?.invalidate()
+        }
     }
 
     private fun activityFrom(context: Context): Activity? {
@@ -960,6 +1119,8 @@ class PlayEmbeds : Plugin() {
             ViewGroup.LayoutParams(size, size)
         }
         (imageParent ?: container).addView(button, layoutParams)
+        button.elevation = dp(container.context, 2).toFloat()
+        button.bringToFront()
         spotifyPlayButtons[container] = button
     }
 
@@ -968,10 +1129,10 @@ class PlayEmbeds : Plugin() {
         (button.parent as? ViewGroup)?.removeView(button)
     }
 
-    private fun hostedPlayerUrl(embed: HostedEmbed, appOrigin: String): String {
+    private fun hostedPlayerUrl(embed: HostedEmbed): String {
         return when (embed.provider) {
             HostedProvider.YOUTUBE -> {
-                youtubePlayerUrl(embed.url, appOrigin)
+                youtubePlayerUrl(embed.url)
             }
 
             HostedProvider.SOUNDCLOUD -> {
@@ -984,9 +1145,6 @@ class PlayEmbeds : Plugin() {
                 spotifyPlayerUrl(embed.url)
             }
 
-            HostedProvider.GENERIC -> {
-                embed.url
-            }
         }
     }
 
@@ -1003,7 +1161,13 @@ class PlayEmbeds : Plugin() {
         return "https://open.spotify.com/embed/$type/${Uri.encode(id)}?utm_source=generator"
     }
 
-    private fun youtubePlayerUrl(url: String, appOrigin: String): String {
+    private fun spotifyPlayerHeight(url: String): Int {
+        // The compact Spotify embed is a landscape mini player. It fits track
+        // controls without turning the message into a tall full-player panel.
+        return 152
+    }
+
+    private fun youtubePlayerUrl(url: String): String {
         val uri = Uri.parse(url)
         val videoId = youtubeVideoId(uri)
 
@@ -1011,7 +1175,7 @@ class PlayEmbeds : Plugin() {
             url
         } else {
             "https://www.youtube.com/embed/${Uri.encode(videoId)}" +
-                "?playsinline=1&autoplay=1&origin=${Uri.encode(appOrigin)}"
+                "?playsinline=1&autoplay=1"
         }
     }
 
@@ -1029,35 +1193,55 @@ class PlayEmbeds : Plugin() {
     }
 
     private fun embedLink(embed: MessageEmbed): EmbedLink? {
-        if (isKkinstagramEmbed(embed)) return null
         if (isGifEmbed(embed)) return null
+        if (isDirectLinkedMediaEmbed(embed)) return null
         if (genericVideoUrl(embed) != null) return EmbedLink.InlineVideo(embed)
-        return mediaLink(embed)?.let { EmbedLink.Direct(it) }
-            ?: hostedEmbed(embed)?.let { EmbedLink.Hosted(it) }
+        return hostedEmbed(embed)?.let { EmbedLink.Hosted(it) }
     }
 
     private fun genericVideoUrl(embed: MessageEmbed): String? {
-        if (isKkinstagramEmbed(embed)) return null
         if (isGifEmbed(embed)) return null
+        if (isDirectLinkedMediaEmbed(embed) || EmbedResourceUtils.INSTANCE.isInlineEmbed(embed)) return null
         val video = embed.m() ?: return null
         val providerName = embed.g()?.a()?.lowercase(Locale.ROOT)
         if (providerName in HOSTED_VIDEO_PROVIDERS) return null
 
         val urls = listOfNotNull(embed.l(), video.c(), video.b()).filter(::isHttpUrl)
         if (urls.isEmpty() || urls.any(::requiresHostedPlayer)) return null
-        return listOfNotNull(video.c(), video.b()).firstOrNull(::isHttpUrl)
+        // HTML pages and provider URLs are not <video> sources. If there is
+        // no actual media URL, leave the embed to Discord's normal handler.
+        return listOfNotNull(video.c(), video.b())
+            .firstNotNullOfOrNull(::resolveEmbeddedMediaUrl)
+    }
+
+    /**
+     * Embed video URLs may be redirect endpoints whose query contains the
+     * actual media URL. Unwrap those generically, but only accept the result
+     * when it looks like playable media, so ordinary embed links stay native.
+     */
+    private fun resolveEmbeddedMediaUrl(url: String, depth: Int = 0): String? {
+        if (!isHttpUrl(url)) return null
+        if (mediaKind(url, hasEmbedVideo = true) != null) return url
+        if (depth >= MAX_EMBED_MEDIA_REDIRECT_DEPTH) return null
+
+        val uri = Uri.parse(url)
+        return uri.queryParameterNames
+            .asSequence()
+            .mapNotNull(uri::getQueryParameter)
+            .filter(::isHttpUrl)
+            .firstNotNullOfOrNull { nestedUrl ->
+                resolveEmbeddedMediaUrl(nestedUrl, depth + 1)
+            }
     }
 
     private fun hostedEmbed(embed: MessageEmbed): HostedEmbed? {
-        if (isKkinstagramEmbed(embed)) return null
         if (isGifEmbed(embed)) return null
+        if (isDirectLinkedMediaEmbed(embed)) return null
         if (genericVideoUrl(embed) != null) return null
-        if (mediaLink(embed) != null) return null
         val candidates = listOfNotNull(embed.l(), embed.m()?.c(), embed.m()?.b(), embed.g()?.b())
         for (url in candidates) {
             if (!isHttpUrl(url)) continue
             val provider = hostedProvider(Uri.parse(url).host) ?: continue
-            if (provider == HostedProvider.GENERIC && !isGenericHostedEmbed(embed, url)) continue
             return HostedEmbed(url, provider, embed.j(), embed)
         }
         return null
@@ -1065,20 +1249,11 @@ class PlayEmbeds : Plugin() {
 
     private fun hostedEmbed(url: String): HostedEmbed? {
         if (!isHttpUrl(url)) return null
-        if (isHost(Uri.parse(url).host, "kkinstagram.com")) return null
         if (isGifUrl(url)) return null
         if (isDiscordNativeVideoUrl(url)) return null
         if (mediaLink(url) != null) return null
         val provider = hostedProvider(Uri.parse(url).host) ?: return null
         return HostedEmbed(url = url, provider = provider)
-    }
-
-    private fun isGenericHostedEmbed(embed: MessageEmbed, url: String): Boolean {
-        val host = Uri.parse(url).host
-        return hostedProvider(host) == HostedProvider.SPOTIFY ||
-            embed.k() == EmbedType.VIDEO ||
-            embed.k() == EmbedType.GIFV ||
-            embed.m() != null
     }
 
     private fun isGifEmbed(embed: MessageEmbed): Boolean {
@@ -1093,9 +1268,9 @@ class PlayEmbeds : Plugin() {
         ).any(::isGifUrl)
     }
 
-    private fun isKkinstagramEmbed(embed: MessageEmbed): Boolean {
-        return listOfNotNull(embed.l(), embed.g()?.b(), embed.m()?.c(), embed.m()?.b())
-            .any { url -> isHost(Uri.parse(url).host, "kkinstagram.com") }
+    private fun isDirectLinkedMediaEmbed(embed: MessageEmbed): Boolean {
+        val url = embed.l() ?: return false
+        return isHttpUrl(url) && mediaKind(url, hasEmbedVideo = false) != null
     }
 
     private fun isGifUrl(url: String): Boolean {
@@ -1116,7 +1291,6 @@ class PlayEmbeds : Plugin() {
             isHost(host, "youtube.com") || isHost(host, "youtu.be") -> HostedProvider.YOUTUBE
             isHost(host, "soundcloud.com") -> HostedProvider.SOUNDCLOUD
             isHost(host, "spotify.com") || isHost(host, "spotify.link") -> HostedProvider.SPOTIFY
-            host?.isNotEmpty() == true -> HostedProvider.GENERIC
             else -> null
         }
     }
@@ -1137,32 +1311,6 @@ class PlayEmbeds : Plugin() {
     private fun isHost(host: String?, domain: String): Boolean {
         val normalizedHost = host?.lowercase(Locale.ROOT) ?: return false
         return normalizedHost == domain || normalizedHost.endsWith(".$domain")
-    }
-
-    private fun mediaLink(embed: MessageEmbed): MediaLink? {
-        if (isKkinstagramEmbed(embed)) return null
-        if (isGifEmbed(embed)) return null
-        val video = embed.m()
-        val embedUrl = embed.l()?.takeIf(::isHttpUrl)
-        val thumbnail = embed.h()
-        val previewUrl = thumbnail?.b()?.takeIf(::isHttpUrl)
-            ?: thumbnail?.c()?.takeIf(::isHttpUrl)
-            ?: video?.b()?.takeIf(::isHttpUrl)
-            ?: video?.c()?.takeIf(::isHttpUrl)
-
-        val candidates = listOfNotNull(video?.b(), video?.c(), embedUrl).filter(::isHttpUrl)
-        for (url in candidates) {
-            val kind = mediaKind(url, hasEmbedVideo = video != null) ?: continue
-            return MediaLink(
-                url = url,
-                mimeType = kind.mimeType,
-                title = embed.j(),
-                previewUrl = previewUrl,
-                width = video?.d()?.takeIf { it > 0 },
-                height = video?.a()?.takeIf { it > 0 },
-            )
-        }
-        return null
     }
 
     private fun mediaLink(url: String): MediaLink? {
@@ -1213,6 +1361,7 @@ class PlayEmbeds : Plugin() {
         ArrayList(spotifyPlayButtons.keys).forEach(::removeSpotifyPlayButton)
         embedLinks.clear()
         hostedEmbeds.clear()
+        searchEmbedClicks.clear()
         patcher.unpatchAll()
     }
 
@@ -1231,6 +1380,9 @@ class PlayEmbeds : Plugin() {
         val callback: WebChromeClient.CustomViewCallback,
         val previousSystemUiVisibility: Int,
         val wasFullscreen: Boolean,
+        val playerParent: ViewGroup?,
+        val playerLayoutParams: ViewGroup.LayoutParams?,
+        val embedReplacement: HostedEmbedReplacement?,
     )
 
     private data class HostedPlayerState(
@@ -1238,6 +1390,25 @@ class PlayEmbeds : Plugin() {
         val parent: ViewGroup,
         val previousVisibility: List<Pair<View, Int>>,
         val url: String,
+        val extraView: View?,
+        val previousMinimumWidth: Int,
+        val replacement: HostedEmbedReplacement? = null,
+    )
+
+    private data class HostedEmbedReplacement(
+        val wrapper: FrameLayout,
+        val originalParent: ViewGroup,
+        val originalIndex: Int,
+        val originalLayoutParams: ViewGroup.LayoutParams,
+        val originalCard: ViewGroup,
+        val originalId: Int,
+        val originalWidth: Int,
+        val originalHeight: Int,
+    )
+
+    private data class SearchEmbedClick(
+        val handler: WidgetChatListAdapter.EventHandler,
+        val entry: EmbedEntry,
     )
 
     private data class InlineVideoState(
@@ -1249,8 +1420,6 @@ class PlayEmbeds : Plugin() {
 
     private sealed class EmbedLink {
         data class InlineVideo(val embed: MessageEmbed) : EmbedLink()
-
-        data class Direct(val media: MediaLink) : EmbedLink()
 
         data class Hosted(val embed: HostedEmbed) : EmbedLink()
     }
@@ -1266,7 +1435,6 @@ class PlayEmbeds : Plugin() {
         YOUTUBE("YouTube"),
         SOUNDCLOUD("SoundCloud"),
         SPOTIFY("Spotify"),
-        GENERIC("Hosted media"),
     }
 
     private enum class MediaKind(val mimeType: String) {
@@ -1275,6 +1443,7 @@ class PlayEmbeds : Plugin() {
     }
 
     private companion object {
+        const val MAX_EMBED_MEDIA_REDIRECT_DEPTH = 4
         const val FEATURE_TAG = "PlayEmbeds"
         const val DEFAULT_MEDIA_SIZE = 1
         const val INTENT_TITLE = "INTENT_TITLE"
