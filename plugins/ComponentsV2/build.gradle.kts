@@ -1,6 +1,6 @@
 import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
 
-version = "8.10.0"
+version = "8.11.0"
 description = "Beta backport of ComponentsV2"
 
 android {
@@ -18,6 +18,9 @@ aliucord {
         
         Changelog {added marginTop}
         ======================
+        # 8.11.0
+        * Support forms
+
         # 8.10.0
         * Show bot Components V2 in search results and other secondary message lists
         * Render forwarded bot messages from their message snapshots

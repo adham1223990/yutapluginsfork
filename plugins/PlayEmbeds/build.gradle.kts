@@ -1,9 +1,17 @@
-version = "1.0.4"
+version = "1.0.5"
 description = "Plays direct video and audio link embeds in Discord's built-in media player."
 
 aliucord {
     changelog.set(
         """
+        # 1.0.5
+        * Play signed, extensionless video embeds such as OGInstagram reels using Discord's proxy URL.
+        * Keep inline videos playing when message rows refresh.
+        * Fall back to Discord's normal click behavior when the inline player cannot be displayed.
+        * Keep hosted clicks usable when a preview is unavailable.
+        * Load Spotify short links in the embed player after they resolve.
+        * Handle YouTube playlists and already embedded SoundCloud widget URLs.
+
         # 1.0.4
         * Play extensionless video URLs using the media type supplied in the embed, without adding service-specific host rules.
 
