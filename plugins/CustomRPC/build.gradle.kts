@@ -1,8 +1,10 @@
-version = "1.0.4"
+version = "1.0.5"
 description = "Set a custom Rich Presence from Aliucord settings."
 aliucord {
     changelog.set(
         """
+        # 1.0.5
+        * Fix crash
         # 1.0.3
         * Rewrite CustomRPC entirely in Kotlin while preserving existing settings
         * Redesign settings and selection dialogs with themed cards and a live activity text preview

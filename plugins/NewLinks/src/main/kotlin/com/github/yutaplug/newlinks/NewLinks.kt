@@ -52,7 +52,13 @@ class NewLinks : Plugin() {
             val renderContext = frame.args[1] as? MessageRenderContext ?: return@PreHook
             // Preserve explicitly named Markdown hyperlinks and unrevealed spoilers.
             if (mask.get(node) != null || hiddenLinks[node] == true) return@PreHook
-            val destination = resolve(node.url, renderContext.context) ?: return@PreHook
+            val destination = try {
+                resolve(node.url, renderContext.context)
+            } catch (error: Exception) {
+                // A failed lookup must leave Discord's normal URL rendering intact.
+                logger.error("Could not resolve a Discord link", error)
+                null
+            } ?: return@PreHook
             val builder = frame.args[0] as SpannableStringBuilder
             val start = builder.length
             val richBuilder = builder as? DraweeSpanStringBuilder
@@ -101,14 +107,14 @@ class NewLinks : Plugin() {
         val channels = StoreStream.getChannels()
         val channel = channels.getChannel(link.channelId) ?: return null
         val name = ChannelUtils.c(channel)
-        if (name.isEmpty()) return null
+        if (name.length == 0) return null
         if (link.guildId == null) {
             if (!ChannelUtils.B(channel)) return null
             return Destination("@$name", null, icon)
         }
         if (channel.i() != link.guildId || ChannelUtils.B(channel)) return null
         val guild = StoreStream.getGuilds().getGuild(link.guildId) ?: return null
-        if (guild.name.isNullOrEmpty()) return null
+        if (guild.name == null || guild.name.length == 0) return null
         val label = if (ChannelUtils.H(channel)) {
             val parent = channels.getChannel(channel.u())
             if (parent != null && parent.i() == link.guildId) {

@@ -1,6 +1,8 @@
 package com.github.yutaplug.customrpc
 
 import android.content.Context
+import android.os.Bundle
+import androidx.activity.ComponentActivity
 import com.aliucord.Http
 import com.aliucord.Utils
 import com.aliucord.annotations.AliucordPlugin
@@ -104,6 +106,19 @@ class CustomRPC : Plugin() {
     override fun start(context: Context) {
         running = true
         createdAt = System.currentTimeMillis()
+        // FragmentActivity saves its fragments through ComponentActivity's saved-state registry.
+        // Plugin fragments cannot be restored before Aliucord loads the plugin after process death.
+        patcher.patch(
+            ComponentActivity::class.java.getDeclaredMethod("onSaveInstanceState", Bundle::class.java),
+            PreHook { frame ->
+                val activity = frame.thisObject as? AppActivity ?: return@PreHook
+                val manager = activity.supportFragmentManager
+                if (manager.isDestroyed) return@PreHook
+                manager.fragments.filterIsInstance<CustomRPCSettings>().forEach { sheet ->
+                    manager.beginTransaction().remove(sheet).commitNowAllowingStateLoss()
+                }
+            },
+        )
         patcher.patch(
             IconUtils::class.java.getDeclaredMethod(
                 "getAssetImage",
