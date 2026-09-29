@@ -1,9 +1,12 @@
-version = "1.0.5"
+version = "1.0.6"
 description = "Plays direct video and audio link embeds in Discord's built-in media player."
 
 aliucord {
     changelog.set(
         """
+        # 1.0.6
+        Refactor and cleanup
+
         # 1.0.5
         * Play signed, extensionless video embeds such as OGInstagram reels using Discord's proxy URL.
         * Keep inline videos playing when message rows refresh.
