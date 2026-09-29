@@ -1,4 +1,4 @@
-version = "1.0.9"
+version = "1.0.10"
 description = "Backports viewing Discord Nitro profile effects and profile frames."
 aliucord {
     changelog.set(

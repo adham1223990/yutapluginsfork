@@ -2,6 +2,7 @@ package com.github.yutaplug.profileboard
 
 import android.content.Context
 import android.graphics.Typeface
+import android.graphics.drawable.Animatable
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
@@ -10,9 +11,11 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.content.res.ResourcesCompat
+import b.f.g.c.c
 import com.aliucord.Utils
 import com.aliucord.annotations.AliucordPlugin
 import com.aliucord.entities.Plugin
@@ -23,6 +26,7 @@ import com.discord.utilities.images.MGImages
 import com.discord.widgets.user.usersheet.WidgetUserSheet
 import com.discord.widgets.user.usersheet.WidgetUserSheetViewModel
 import com.facebook.drawee.view.SimpleDraweeView
+import com.facebook.imagepipeline.image.ImageInfo
 import com.google.android.flexbox.FlexboxLayout
 import com.google.android.material.card.MaterialCardView
 import java.lang.ref.WeakReference
@@ -33,6 +37,7 @@ class ProfileBoard : Plugin() {
     private companion object {
         const val TAB_MARKER = "ProfileBoard:tabs"
         const val CONTENT_MARKER = "ProfileBoard:content"
+        const val WISHLIST_CONTENT_MARKER = "ProfileBoard:wishlist"
     }
 
     private data class Tab(val frame: FrameLayout, val label: TextView, val indicator: View)
@@ -51,14 +56,17 @@ class ProfileBoard : Plugin() {
         val tabs: LinearLayout,
         val mainTab: TextView,
         val boardTab: TextView,
+        val wishlistTab: TextView,
         val mainIndicator: View,
         val boardIndicator: View,
+        val wishlistIndicator: View,
         val boardContent: LinearLayout,
+        val wishlistContent: LinearLayout,
         val originals: List<View>,
     ) {
         var userId = 0L
         var generation = 0
-        var boardSelected = false
+        var selected = 0
         var data: BoardData? = null
         val visibilities = IdentityHashMap<View, Int>()
     }
@@ -101,20 +109,21 @@ class ProfileBoard : Plugin() {
                 current.actions.elevation = 0f
                 root.post {
                     if (bindings[sheet] === current && sheet.view === root) {
-                        removeOldRows(current.content, current.tabs, current.boardContent)
+                        removeOldRows(current.content, current.tabs, current.boardContent, current.wishlistContent)
                     }
                 }
                 if (binding.userId != state.user.id) {
                     binding.userId = state.user.id
                     binding.generation++
                     binding.data = null
-                    binding.boardSelected = false
+                    binding.selected = 0
                     binding.tabs.visibility = View.VISIBLE
+                    (binding.wishlistTab.parent as? View)?.visibility = View.GONE
                     renderStatus(binding, "Loading Board…")
-                    select(binding, false)
+                    select(binding, 0)
                     load(sheet, binding)
-                } else if (binding.boardSelected) {
-                    select(binding, true)
+                } else if (binding.selected != 0) {
+                    select(binding, binding.selected)
                 }
             },
         )
@@ -146,8 +155,11 @@ class ProfileBoard : Plugin() {
         }
         val mainTab = tab(context, "Main")
         val boardTab = tab(context, "Board")
+        val wishlistTab = tab(context, "Wishlist")
         tabs.addView(mainTab.frame, LinearLayout.LayoutParams(0, dp(context, 48), 1f))
         tabs.addView(boardTab.frame, LinearLayout.LayoutParams(0, dp(context, 48), 1f))
+        tabs.addView(wishlistTab.frame, LinearLayout.LayoutParams(0, dp(context, 48), 1f))
+        wishlistTab.frame.visibility = View.GONE
         content.addView(tabs, index + 1, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         val originals = ArrayList<View>()
         var originalIndex = index + 2
@@ -160,21 +172,27 @@ class ProfileBoard : Plugin() {
             tag = CONTENT_MARKER
         }
         content.addView(boardContent, index + 2, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        val wishlistContent = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            tag = WISHLIST_CONTENT_MARKER
+        }
+        content.addView(wishlistContent, index + 3, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         val binding = Binding(root, content, header, header.elevation, editActions, editActions.elevation,
             actionsDivider, actionsDivider.visibility,
-            actions, actions.elevation, tabs, mainTab.label, boardTab.label,
-            mainTab.indicator, boardTab.indicator, boardContent, originals)
+            actions, actions.elevation, tabs, mainTab.label, boardTab.label, wishlistTab.label,
+            mainTab.indicator, boardTab.indicator, wishlistTab.indicator, boardContent, wishlistContent, originals)
         header.elevation = 0f
         editActions.elevation = 0f
         actionsDivider.visibility = View.GONE
         actions.elevation = 0f
-        mainTab.frame.setOnClickListener { select(binding, false) }
-        boardTab.frame.setOnClickListener { select(binding, true) }
-        select(binding, false)
+        mainTab.frame.setOnClickListener { select(binding, 0) }
+        boardTab.frame.setOnClickListener { select(binding, 1) }
+        wishlistTab.frame.setOnClickListener { select(binding, 2) }
+        select(binding, 0)
         return binding
     }
 
-    private fun removeOldRows(content: LinearLayout, keepTabs: View? = null, keepBody: View? = null) {
+    private fun removeOldRows(content: LinearLayout, keepTabs: View? = null, keepBody: View? = null, keepWishlist: View? = null) {
         val children = ArrayList<View>(content.childCount)
         var index = 0
         while (index < content.childCount) {
@@ -184,7 +202,7 @@ class ProfileBoard : Plugin() {
         var position = 0
         while (position < children.size) {
             val child = children[position]
-            if (child === keepTabs || child === keepBody) {
+            if (child === keepTabs || child === keepBody || child === keepWishlist) {
                 position++
                 continue
             }
@@ -200,7 +218,7 @@ class ProfileBoard : Plugin() {
                         content.removeView(next)
                     }
                 }
-            } else if (child.tag == CONTENT_MARKER) {
+            } else if (child.tag == CONTENT_MARKER || child.tag == WISHLIST_CONTENT_MARKER) {
                 content.removeView(child)
             }
             position++
@@ -218,8 +236,10 @@ class ProfileBoard : Plugin() {
                     binding.generation != generation || target.view !== binding.root) return@post
                 result.onSuccess { data ->
                     binding.data = data
+                    (binding.wishlistTab.parent as? View)?.visibility = if (data.wishlist == null) View.GONE else View.VISIBLE
                     if (data.widgets.isEmpty()) renderStatus(binding, "No widgets on this Board.")
                     else render(binding, data)
+                    renderWishlist(binding, data.wishlist)
                 }.onFailure { error ->
                     logger.error("Could not load profile board", error)
                     renderStatus(binding, "Could not load Board. Tap to retry.") {
@@ -231,27 +251,32 @@ class ProfileBoard : Plugin() {
         }
     }
 
-    private fun select(binding: Binding, board: Boolean) {
-        binding.boardSelected = board
-        if (board) {
+    private fun select(binding: Binding, section: Int) {
+        binding.selected = section
+        if (section != 0) {
             if (binding.visibilities.isEmpty()) {
                 for (view in binding.originals) {
                     binding.visibilities[view] = view.visibility
                     view.visibility = View.GONE
                 }
             }
-            binding.boardContent.visibility = View.VISIBLE
+            binding.boardContent.visibility = if (section == 1) View.VISIBLE else View.GONE
+            binding.wishlistContent.visibility = if (section == 2) View.VISIBLE else View.GONE
         } else {
             restore(binding)
             binding.boardContent.visibility = View.GONE
+            binding.wishlistContent.visibility = View.GONE
         }
         val context = binding.root.context
-        binding.mainTab.setTextColor(themeColor(context, if (board) "colorHeaderSecondary" else "colorHeaderPrimary"))
-        binding.boardTab.setTextColor(themeColor(context, if (board) "colorHeaderPrimary" else "colorHeaderSecondary"))
-        binding.mainIndicator.visibility = if (board) View.INVISIBLE else View.VISIBLE
-        binding.boardIndicator.visibility = if (board) View.VISIBLE else View.INVISIBLE
-        binding.mainTab.isSelected = !board
-        binding.boardTab.isSelected = board
+        val labels = arrayOf(binding.mainTab, binding.boardTab, binding.wishlistTab)
+        val indicators = arrayOf(binding.mainIndicator, binding.boardIndicator, binding.wishlistIndicator)
+        var index = 0
+        while (index < labels.size) {
+            labels[index].setTextColor(themeColor(context, if (index == section) "colorHeaderPrimary" else "colorHeaderSecondary"))
+            labels[index].isSelected = index == section
+            indicators[index].visibility = if (index == section) View.VISIBLE else View.INVISIBLE
+            index++
+        }
     }
 
     private fun restore(binding: Binding) {
@@ -298,6 +323,95 @@ class ProfileBoard : Plugin() {
                 "played_games", "want_to_play_games" -> grid(body, widget.games, data.games)
                 "application" -> if (application != null) renderApplication(body, application)
             }
+        }
+    }
+
+    private fun renderWishlist(binding: Binding, wishlist: WishlistData?) {
+        val host = binding.wishlistContent
+        host.removeAllViews()
+        if (wishlist == null) return
+        val context = host.context
+        val heading = styledText(context, "UserProfile_Section_HeaderTextAppearance").apply {
+            text = if (wishlist.failed) "Wishlist" else "${wishlist.items.size} ${if (wishlist.items.size == 1) "Item" else "Items"}"
+            isAllCaps = false
+            setTextColor(themeColor(context, "colorHeaderSecondary"))
+        }
+        host.addView(heading, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            setMargins(dp(context, 16), dp(context, 16), dp(context, 16), dp(context, 12))
+        })
+        if (wishlist.failed || wishlist.items.isEmpty()) {
+            host.addView(styledText(context, "UiKit_TextView").apply {
+                text = if (wishlist.failed) "Could not load Wishlist. Tap to retry." else "No items on this Wishlist."
+                if (wishlist.failed) setOnClickListener {
+                    val sheet = bindings.entries.firstOrNull { it.value === binding }?.key ?: return@setOnClickListener
+                    load(sheet, binding)
+                }
+            }, sectionParams(context))
+            return
+        }
+        val size = (context.resources.displayMetrics.widthPixels - dp(context, 48)) / 2
+        var index = 0
+        while (index < wishlist.items.size) {
+            val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+            var column = 0
+            while (column < 2) {
+                val item = if (index < wishlist.items.size) wishlist.items[index++] else null
+                val tile = FrameLayout(context).apply {
+                    background = GradientDrawable().apply {
+                        cornerRadius = dp(context, 16).toFloat()
+                        setColor(themeColor(context, "colorBackgroundTertiary"))
+                    }
+                    clipToOutline = true
+                    contentDescription = item?.name
+                }
+                val fallback = if (item != null) {
+                    styledText(context, "UserProfile_Section_HeaderTextAppearance").apply {
+                        text = item.name
+                        gravity = Gravity.CENTER
+                        isAllCaps = false
+                        setPadding(dp(context, 12), dp(context, 12), dp(context, 12), dp(context, 12))
+                    }.also {
+                        tile.addView(it, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+                    }
+                } else null
+                if (item?.isNitro == true) {
+                    NitroArtwork.bitmap()?.let { bitmap ->
+                        fallback?.visibility = View.GONE
+                        tile.addView(ImageView(context).apply {
+                            setImageBitmap(bitmap)
+                            scaleType = ImageView.ScaleType.FIT_CENTER
+                            contentDescription = item.name
+                        }, FrameLayout.LayoutParams(size - dp(context, 16), (size * 0.78f).toInt(),
+                            Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = dp(context, 8) })
+                        val logo = Utils.getResId("img_logo_nitro", "drawable")
+                        if (logo != 0) {
+                            tile.addView(ImageView(context).apply {
+                                setImageResource(logo)
+                                scaleType = ImageView.ScaleType.FIT_CENTER
+                            }, FrameLayout.LayoutParams((size * 0.62f).toInt(), (size * 0.16f).toInt(),
+                                Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = dp(context, 20) })
+                        }
+                    }
+                } else if (item?.image != null) {
+                    val image = SimpleDraweeView(context).apply { contentDescription = item.name }
+                    tile.addView(image, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+                    MGImages.setImage(image, listOf(item.image), 0, 0, false, null,
+                        MGImages.AlwaysUpdateChangeDetector.INSTANCE, object : c<ImageInfo>() {
+                            override fun onFinalImageSet(id: String?, info: ImageInfo?, animatable: Animatable?) {
+                                fallback?.post { fallback.visibility = View.GONE }
+                            }
+                        })
+                }
+                row.addView(tile, LinearLayout.LayoutParams(0, size, 1f).apply {
+                    if (column == 0) marginEnd = dp(context, 8)
+                })
+                column++
+            }
+            host.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                marginStart = dp(context, 16)
+                marginEnd = dp(context, 16)
+                bottomMargin = dp(context, 8)
+            })
         }
     }
 
@@ -557,7 +671,9 @@ class ProfileBoard : Plugin() {
         binding.actions.elevation = binding.actionsElevation
         binding.content.removeView(binding.tabs)
         binding.content.removeView(binding.boardContent)
+        binding.content.removeView(binding.wishlistContent)
         binding.boardContent.removeAllViews()
+        binding.wishlistContent.removeAllViews()
     }
 
     override fun stop(context: Context) {

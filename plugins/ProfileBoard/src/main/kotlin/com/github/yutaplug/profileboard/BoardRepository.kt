@@ -13,10 +13,13 @@ internal data class BoardGame(val id: String, val comment: String?, val tags: Li
 internal const val UNKNOWN_GAME_NAME = "Unknown game"
 internal data class BoardWidget(val type: String, val games: List<BoardGame>, val applicationId: String?)
 internal data class GameInfo(val name: String, val image: String?)
+internal data class WishlistItem(val name: String, val image: String?, val isNitro: Boolean)
+internal data class WishlistData(val items: List<WishlistItem>, val failed: Boolean = false)
 internal data class BoardData(
     val widgets: List<BoardWidget>,
     val games: Map<String, GameInfo>,
     val applications: Map<String, ApplicationWidget>,
+    val wishlist: WishlistData?,
 )
 
 internal class BoardRepository {
@@ -32,6 +35,14 @@ internal class BoardRepository {
                 val profile = request("/users/$userId/profile?with_mutual_guilds=false&with_mutual_friends=false", account)
                     as? JSONObject ?: error("Invalid profile response")
                 val widgets = parseWidgets(profile.optJSONArray("widgets"))
+                val wishlistSettings = profile.optJSONObject("wishlist_settings")
+                val wishlistId = wishlistSettings?.keys()?.let { keys -> if (keys.hasNext()) keys.next() else null }
+                val wishlist = if (wishlistId != null && wishlistId.all { it in '0'..'9' }) {
+                    val response = runCatching {
+                        request("/wishlists/$wishlistId?source=user_profile", account) as? JSONObject
+                    }.getOrNull()
+                    if (response == null) WishlistData(emptyList(), true) else parseWishlist(response)
+                } else null
                 val gameIds = LinkedHashSet<String>()
                 for (widget in widgets) {
                     for (game in widget.games) gameIds.add(game.id)
@@ -75,7 +86,7 @@ internal class BoardRepository {
                 }
                 val applications = ApplicationWidgets.load(userId, widgets, ::request, account)
                 check(token() == account) { "Account changed" }
-                BoardData(widgets, games, applications)
+                BoardData(widgets, games, applications, wishlist)
             }
             if (!closed) callback(result)
         }
@@ -162,6 +173,47 @@ internal class BoardRepository {
             else -> null
         }
         return id to GameInfo(name, image)
+    }
+
+    private fun parseWishlist(response: JSONObject): WishlistData {
+        val items = ArrayList<WishlistItem>()
+        val array = response.optJSONArray("wishlist_items") ?: return WishlistData(items)
+        var index = 0
+        while (index < array.length()) {
+            val item = array.optJSONObject(index)
+            val sku = item?.optJSONObject("sku")
+            val name = sku?.text("name") ?: item?.text("sku_name") ?: "Unknown item"
+            val id = sku?.text("id") ?: item?.text("sku_id")
+            val preview = sku?.optJSONObject("preview_asset_paths")?.text("fg_static")
+            val productLine = sku?.optInt("product_line", item.optInt("sku_product_line", -1)) ?: -1
+            val applicationId = sku?.text("application_id")
+            val thumbnail = sku?.text("thumbnail_asset_id")
+            val collectible = sku?.optJSONObject("tenant_metadata")?.optJSONObject("collectibles")?.optJSONObject("item")
+            val collectiblePreview = collectible?.text("thumbnailPreviewSrc")
+                ?: collectible?.text("staticFrameSrc")
+                ?: collectible?.optJSONObject("assets")?.text("static_image_path")
+            val image = when {
+                toCdnUrl(collectiblePreview) != null -> toCdnUrl(collectiblePreview)
+                toCdnUrl(preview) != null -> toCdnUrl(preview)
+                thumbnail != null && applicationId != null ->
+                    "https://cdn.discordapp.com/store/applications/$applicationId/assets/$thumbnail.png"
+                productLine == 7 && id != null -> "https://cdn.discordapp.com/media/v1/collectibles-shop/$id/static"
+                else -> null
+            }
+            if (item != null) items.add(WishlistItem(name, image, productLine == 1))
+            index++
+        }
+        return WishlistData(items)
+    }
+
+    private fun toCdnUrl(path: String?): String? = when {
+        path == null -> null
+        path.startsWith("https://") -> path
+        path.startsWith("/media/") -> "https://cdn.discordapp.com$path"
+        path.startsWith("media/") -> "https://cdn.discordapp.com/$path"
+        path.startsWith("/collectibles-shop/") -> "https://cdn.discordapp.com/media/v1$path"
+        path.startsWith("collectibles-shop/") -> "https://cdn.discordapp.com/media/v1/$path"
+        else -> null
     }
 
     private fun JSONObject.text(key: String): String? =

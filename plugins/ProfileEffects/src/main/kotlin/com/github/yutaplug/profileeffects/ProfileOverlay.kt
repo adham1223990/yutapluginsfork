@@ -1,6 +1,7 @@
 package com.github.yutaplug.profileeffects
 
 import android.content.Context
+import android.graphics.Canvas
 import android.graphics.Rect
 import android.graphics.drawable.Animatable
 import android.os.Handler
@@ -11,6 +12,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.constraintlayout.widget.ConstraintLayout
+import androidx.core.widget.NestedScrollView
 import b.f.g.c.c
 import com.discord.utilities.images.MGImages
 import com.discord.widgets.user.profile.UserProfileHeaderView
@@ -99,6 +101,8 @@ private fun descendant(view: View, name: String): View? {
 internal class ProfileOverlay private constructor(
     private val header: UserProfileHeaderView,
     private val host: ViewGroup,
+    private val frameHost: FrameLayout,
+    private val scroll: NestedScrollView,
     private val content: View,
     private val clips: ClipOwners,
     private val log: (String, Throwable) -> Unit,
@@ -112,8 +116,9 @@ internal class ProfileOverlay private constructor(
     private val front = FrameOverlay(header.context, true)
     private val effect = EffectOverlay(header.context, log)
     private val overlays = listOf(back, effect, front)
-    private val observed = listOf(header, host, content).distinct()
+    private val observed = listOf(header, host, frameHost, scroll, content).distinct()
     private var clipGroups: List<ViewGroup> = emptyList()
+    private var frameOrigin: Rect? = null
     private var disposed = false
     private val cleanupHandler = Handler(Looper.getMainLooper())
     private val cleanup = DeferredCleanup({ cleanupHandler.post(it) }, { cleanupHandler.removeCallbacks(it) })
@@ -121,18 +126,14 @@ internal class ProfileOverlay private constructor(
     private val layoutListener = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> resize() }
 
     init {
-        back.clipChildren = false
-        back.clipToPadding = false
-        front.clipChildren = false
-        front.clipToPadding = false
-        host.addView(back, 0, params())
+        frameHost.addView(back, 0, FrameLayout.LayoutParams(1, 1, Gravity.TOP or Gravity.LEFT))
         host.addView(effect, params())
-        host.addView(front, params())
+        frameHost.addView(front, FrameLayout.LayoutParams(1, 1, Gravity.TOP or Gravity.LEFT))
         // Android orders elevated native containers ahead of later zero-elevation siblings.
         var elevation = 0f
         var index = 0
-        while (index < host.childCount) {
-            val child = host.getChildAt(index++)
+        while (index < frameHost.childCount) {
+            val child = frameHost.getChildAt(index++)
             if (!overlays.contains(child)) elevation = maxOf(elevation, child.elevation)
         }
         effect.elevation = elevation + header.resources.displayMetrics.density
@@ -142,11 +143,13 @@ internal class ProfileOverlay private constructor(
     }
 
     fun matches(header: UserProfileHeaderView): Boolean = host === findHost(header) &&
+        frameHost === findFrameHost(header) &&
         content === (ancestor(header, "user_sheet_content") ?: header)
 
     fun bind(profile: Profile, animate: Boolean) {
         if (disposed) return
-        if (profile.frame != null && clipGroups.isEmpty()) clipGroups = clips.acquire(host)
+        if (profile.frame == null) frameOrigin = null
+        if (profile.frame != null && clipGroups.isEmpty()) clipGroups = clips.acquire(frameHost)
         if (profile.frame == null && clipGroups.isNotEmpty()) {
             clips.release(clipGroups)
             clipGroups = emptyList()
@@ -168,9 +171,9 @@ internal class ProfileOverlay private constructor(
         FrameLayout.LayoutParams(1, 1, Gravity.TOP or Gravity.LEFT)
     }
 
-    private fun bounds(view: View): Rect {
+    private fun bounds(view: View, parent: ViewGroup = host): Rect {
         val rect = Rect(0, 0, view.width, view.height)
-        if (view !== host) host.offsetDescendantRectToMyCoords(view, rect)
+        if (view !== parent) parent.offsetDescendantRectToMyCoords(view, rect)
         return rect
     }
 
@@ -183,20 +186,39 @@ internal class ProfileOverlay private constructor(
         val railTop = (bounds(banner).top - rect.top).coerceAtLeast(0)
         back.railTop = railTop
         front.railTop = railTop
-        for (overlay in overlays) {
-            val params = overlay.layoutParams as ViewGroup.MarginLayoutParams
-            if (params.width == rect.width() &&
-                params.height == rect.height() &&
-                params.topMargin == rect.top &&
-                params.leftMargin == rect.left
-            ) {
-                continue
+        // Capture the sheet's initial content position. Recomputing it after scroll would
+        // make the frame follow the profile instead of remaining fixed over the sheet.
+        val origin = frameOrigin ?: bounds(content, frameHost).also {
+            if (back.metrics != null) frameOrigin = it
+        }
+        val scale = rect.width().toFloat() / (back.metrics?.innerWidth ?: 1200L)
+        val overflowTop = ((back.metrics?.overflowTop ?: 0L) * scale).roundToInt()
+        val overflowSide = ((back.metrics?.overflowHorizontal ?: 0L) * scale).roundToInt()
+        val frameWidth = rect.width() + 2 * overflowSide
+        val frameHeight = banner.height + railTop + overflowTop
+        for (overlay in listOf(back, front)) {
+            overlay.innerWidth = rect.width()
+            overlay.topOverflow = overflowTop
+            val params = overlay.layoutParams as FrameLayout.LayoutParams
+            val left = origin.left - overflowSide
+            val top = origin.top - overflowTop
+            if (params.width != frameWidth || params.height != frameHeight ||
+                params.leftMargin != left || params.topMargin != top) {
+                params.width = frameWidth
+                params.height = frameHeight
+                params.leftMargin = left
+                params.topMargin = top
+                overlay.layoutParams = params
             }
+        }
+        val params = effect.layoutParams as ViewGroup.MarginLayoutParams
+        if (params.width != rect.width() || params.height != rect.height() ||
+            params.topMargin != rect.top || params.leftMargin != rect.left) {
             params.width = rect.width()
             params.height = rect.height()
             params.topMargin = rect.top
             params.leftMargin = rect.left
-            overlay.layoutParams = params
+            effect.layoutParams = params
         }
     }
 
@@ -225,26 +247,57 @@ internal class ProfileOverlay private constructor(
             return candidate?.takeIf { it is FrameLayout || it is ConstraintLayout }
         }
 
+        private fun findFrameHost(header: UserProfileHeaderView): FrameLayout? {
+            var current: View? = header
+            while (current != null && current !is NestedScrollView) current = current.parent as? View
+            val parent = current?.parent as? FrameLayout ?: return null
+            return parent.takeIf { it.hasResourceName("design_bottom_sheet") }
+        }
+
         fun create(
             header: UserProfileHeaderView,
             clips: ClipOwners,
             log: (String, Throwable) -> Unit,
         ): ProfileOverlay? {
             val host = findHost(header) ?: return null
+            val frameHost = findFrameHost(header) ?: return null
+            var scroll: View? = header
+            while (scroll != null && scroll !is NestedScrollView) scroll = scroll.parent as? View
+            val scrollView = scroll ?: return null
             val content = ancestor(header, "user_sheet_content") ?: header
-            return ProfileOverlay(header, host, content, clips, log)
+            return ProfileOverlay(header, host, frameHost, scrollView, content, clips, log)
         }
     }
 
     private inner class FrameOverlay(context: Context, private val front: Boolean) : TouchThroughLayout(context) {
         private var frame: Product.Frame? = null
+        val metrics: FrameMetrics? get() = frame?.metrics
         private val layers = ArrayList<LayerView>()
+        var innerWidth = 0
+            set(value) {
+                if (field == value) return
+                field = value
+                layoutLayers()
+            }
+        var topOverflow = 0
+            set(value) {
+                if (field == value) return
+                field = value
+                layoutLayers()
+            }
         var railTop = 0
             set(value) {
                 if (field == value) return
                 field = value
                 layoutLayers()
             }
+
+        override fun dispatchDraw(canvas: Canvas) {
+            val saved = canvas.save()
+            canvas.clipRect(0, 0, width, height)
+            super.dispatchDraw(canvas)
+            canvas.restoreToCount(saved)
+        }
 
         fun bind(frame: Product.Frame?) {
             if (this.frame == frame) return
@@ -303,8 +356,8 @@ internal class ProfileOverlay private constructor(
 
         private fun layoutLayers() {
             val metrics = frame?.metrics ?: return
-            if (width <= 0) return
-            val scale = width.toFloat() / metrics.innerWidth
+            if (innerWidth <= 0) return
+            val scale = innerWidth.toFloat() / metrics.innerWidth
             val layerWidth = ((metrics.innerWidth + 2f * metrics.overflowHorizontal) * scale)
                 .coerceIn(1f, MAX_SURFACE_SIZE.toFloat())
                 .roundToInt()
@@ -315,12 +368,12 @@ internal class ProfileOverlay private constructor(
                 val topMargin = if (bottom) {
                     0
                 } else if (view.layer.rail) {
-                    railTop
+                    topOverflow + railTop
                 } else {
-                    -(metrics.overflowTop * scale).roundToInt()
+                    0
                 }
                 val bottomMargin = if (bottom) -(metrics.overflowBottom * scale).roundToInt() else 0
-                val leftMargin = -(metrics.overflowHorizontal * scale).roundToInt()
+                val leftMargin = 0
                 val gravity = Gravity.LEFT or if (bottom) Gravity.BOTTOM else Gravity.TOP
                 val params = view.image.layoutParams as LayoutParams
                 if (params.width == layerWidth &&
