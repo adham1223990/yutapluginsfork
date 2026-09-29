@@ -42,10 +42,12 @@ import com.discord.widgets.chat.input.emoji.EmojiPickerContextType
 import com.discord.widgets.chat.input.emoji.EmojiPickerListener
 import com.discord.widgets.chat.input.emoji.EmojiPickerNavigator
 import com.discord.widgets.chat.list.actions.WidgetChatListActions
+import com.discord.widgets.chat.list.WidgetChatList
 import com.discord.widgets.chat.list.adapter.WidgetChatListAdapterEventsHandler
 import com.discord.widgets.chat.list.adapter.WidgetChatListAdapterItemReactions
 import com.discord.widgets.chat.list.entries.ChatListEntry
 import com.discord.widgets.chat.list.entries.ReactionsEntry
+import com.discord.widgets.chat.list.model.WidgetChatListModel
 import com.discord.widgets.chat.managereactions.ManageReactionsEmojisAdapter
 import com.discord.widgets.chat.managereactions.ManageReactionsModel
 import com.discord.widgets.chat.managereactions.ManageReactionsResultsAdapter
@@ -81,13 +83,14 @@ class SuperReactions : Plugin() {
     private val gatewayReactionTypes = WeakIdentityMap<MessageReactionUpdate, Boolean>()
     private val superReactionFetchTimes = ConcurrentHashMap<Long, Long>()
     private val superReactionFetches = ConcurrentHashMap.newKeySet<Long>()
+    private val channelBatchFetches = ConcurrentHashMap.newKeySet<Long>()
+    private val batchPendingMessages = ConcurrentHashMap.newKeySet<Long>()
     private val superReactionInvalidationVersions = ConcurrentHashMap<Long, Long>()
     private val localMutationVersions = ConcurrentHashMap<Long, Long>()
     private val metadataAttempts = ConcurrentHashMap<Long, Long>()
     private val metadataRefreshes = mutableMapOf<Long, Runnable>()
     private val metadataWaiters = mutableMapOf<Long, MutableList<(Boolean) -> Unit>>()
     private val pendingReactionActions = ConcurrentHashMap.newKeySet<String>()
-    private val knownNormalReactions = ConcurrentHashMap.newKeySet<String>()
     private val locallySentSuperReactions = ConcurrentHashMap.newKeySet<String>()
     private val ownedSuperReactions = ConcurrentHashMap.newKeySet<String>()
     private val pendingSuperReactionRemovals = ConcurrentHashMap.newKeySet<String>()
@@ -97,6 +100,12 @@ class SuperReactions : Plugin() {
     private val normalReactionItems = ConcurrentHashMap<String, List<MGRecyclerDataPayload>>()
     private val burstUserFetches = ConcurrentHashMap.newKeySet<String>()
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val nativeReactionUpdateMethod by lazy {
+        WidgetChatListAdapterEventsHandler.UserReactionHandler::class.java.getDeclaredMethod(
+            "requestReactionUpdate",
+            WidgetChatListAdapterEventsHandler.UserReactionHandler.UpdateRequest::class.java,
+        ).apply { isAccessible = true }
+    }
     private var requests: DiscordRequestQueue? = null
     private var ownedReactionPreferences: SharedPreferences? = null
     private var ownedReactionPreferencesKey: String? = null
@@ -115,6 +124,7 @@ class SuperReactions : Plugin() {
         preferences.getStringSet(preferencesKey, null)?.let { ownedSuperReactions.addAll(it) }
         patchGateway()
         patchMessageActions()
+        patchChatList()
         patchReactionViews()
         patchReactionToggles()
         patchManageReactions()
@@ -215,7 +225,10 @@ class SuperReactions : Plugin() {
             arrayOf(List::class.java, BOOLEAN),
             Hook { frame ->
                 (frame.args[0] as? List<*>)?.filterIsInstance<MessageReactionUpdate>()?.forEach {
-                    invalidateSuperReactionCache(it.c(), it.a())
+                    val key = it.b()?.c()
+                    if (gatewayReactionTypes[it] == true || isSuperReaction(it.c(), key) ||
+                        isOwnSuperReaction(it.c(), key)
+                    ) invalidateSuperReactionCache(it.c(), it.a())
                 }
             },
         )
@@ -261,6 +274,23 @@ class SuperReactions : Plugin() {
         )
     }
 
+    private fun patchChatList() {
+        // A channel model contains its initially loaded messages before every individual
+        // reaction row is bound. Warm those snapshots here so normal reaction toggles do
+        // not need to stop and classify the pill after it becomes visible.
+        patcher.patch(
+            WidgetChatList::class.java,
+            "configureUI",
+            arrayOf(WidgetChatListModel::class.java),
+            PreHook { frame ->
+                val model = frame.args[0] as? WidgetChatListModel ?: return@PreHook
+                val channelId = model.channelId
+                if (channelId == 0L) return@PreHook
+                prefetchChannelSuperReactionMetadata(channelId, model.list.filterIsInstance<ReactionsEntry>())
+            },
+        )
+    }
+
     private fun patchReactionViews() {
         patcher.patch(
             WidgetChatListAdapterItemReactions::class.java,
@@ -285,7 +315,9 @@ class SuperReactions : Plugin() {
                 }
                 reactionChannels[message.id] = message.channelId
                 applySuperReactionStyles(item, message.id)
-                fetchSuperReactionMetadata(message.channelId, message.id)
+                if (message.id !in batchPendingMessages) {
+                    fetchSuperReactionMetadata(message.channelId, message.id)
+                }
             },
         )
         patcher.patch(
@@ -301,7 +333,6 @@ class SuperReactions : Plugin() {
                 val isSuper = type ?: ((count ?: 0) > 0)
                 val view = frame.thisObject as ReactionView
                 val style = reactionStyles.getOrPut(view) { ReactionStyle(view) }
-                style.captureTextColors(view)
                 reactionBindings[view] = ReactionBinding(messageId, reaction, type)
                 setReactionMeState(view, messageId, reaction, isSuper)
                 styleReactionView(view, messageId, key, isSuper, count)
@@ -328,9 +359,20 @@ class SuperReactions : Plugin() {
                 }
                 val type = getExpandedReactionType(messageId, reaction)
                 val isSuper = type ?: isSuperReaction(messageId, key)
-                if (!isMetadataCurrent(messageId) ||
-                    (type == null && !isSuper && !isKnownNormalReaction(messageId, key))
-                ) {
+                if (type == false || (type == null && !isSuper)) {
+                    // Discord's toggleReaction queues taps behind a 250 ms throttle.
+                    // Its own update method still performs the optimistic store update,
+                    // REST request, and rollback, but starts immediately.
+                    clearCompletedSuperReactionRemoval(messageId, key)
+                    if (requestNormalReactionImmediately(
+                            frame.thisObject as WidgetChatListAdapterEventsHandler.UserReactionHandler,
+                            frame.args[0] as Long,
+                            channelId,
+                            messageId,
+                            reaction,
+                        )
+                    ) frame.result = null
+                } else if (!isMetadataCurrent(messageId)) {
                     frame.result = null
                     resolveReactionAndToggle(channelId, messageId, reaction, type)
                 } else if (isSuper) {
@@ -362,6 +404,25 @@ class SuperReactions : Plugin() {
                 }
             },
         )
+    }
+
+    private fun requestNormalReactionImmediately(
+        handler: WidgetChatListAdapterEventsHandler.UserReactionHandler,
+        userId: Long,
+        channelId: Long,
+        messageId: Long,
+        reaction: MessageReaction,
+    ): Boolean = try {
+        nativeReactionUpdateMethod.invoke(
+            handler,
+            WidgetChatListAdapterEventsHandler.UserReactionHandler.UpdateRequest(
+                userId, channelId, messageId, reaction,
+            ),
+        )
+        true
+    } catch (error: Throwable) {
+        logger.error("Could not start normal reaction immediately", error)
+        false
     }
 
     private fun patchManageReactions() {
@@ -671,17 +732,6 @@ class SuperReactions : Plugin() {
 
     private fun isSuperReaction(messageId: Long, key: String?) = (getSuperReactionCount(messageId, key) ?: 0) > 0
 
-    private fun isKnownNormalReaction(messageId: Long, key: String?) = key != null &&
-        reactionStateKeys(messageId, key).any { it in knownNormalReactions }
-
-    private fun markKnownNormalReaction(messageId: Long, key: String?) {
-        if (key != null) knownNormalReactions.addAll(reactionStateKeys(messageId, key))
-    }
-
-    private fun removeKnownNormalReaction(messageId: Long, key: String?) {
-        if (key != null) reactionStateKeys(messageId, key).forEach { knownNormalReactions.remove(it) }
-    }
-
     private fun resolveReactionAndToggle(
         channelId: Long,
         messageId: Long,
@@ -871,6 +921,83 @@ class SuperReactions : Plugin() {
         SystemClock.elapsedRealtime() - it < SUPER_REACTION_CACHE_TTL
     } ?: false
 
+    /** Load the channel's current message window, including burst reaction details. */
+    private fun prefetchChannelSuperReactionMetadata(channelId: Long, entries: List<ReactionsEntry>) {
+        if (!running || channelId == 0L || entries.isEmpty()) return
+        val messageIds = entries.mapNotNull { it.message?.id }.filter { it != 0L }.distinct().sorted()
+        messageIds.forEach { reactionChannels[it] = channelId }
+        val missing = messageIds.filterNot(::isMetadataCurrent)
+        if (missing.isEmpty() || !channelBatchFetches.add(channelId)) return
+        batchPendingMessages.addAll(missing)
+        val versions = missing.associateWith {
+            Pair(localMutationVersions[it] ?: 0L, superReactionInvalidationVersions[it] ?: 0L)
+        }
+        val anchor = messageIds[messageIds.size / 2]
+        request(
+            "/channels/$channelId/messages?around=$anchor&limit=50",
+            "GET",
+            DiscordRequestQueue.METADATA,
+            { response ->
+                channelBatchFetches.remove(channelId)
+                if (!response.ok()) {
+                    completeChannelBatch(channelId, missing, versions, emptyMap())
+                    return@request
+                }
+                try {
+                    val messages = GsonUtils.gson.fromJson(response.body, List::class.java)
+                        .filterIsInstance<Map<*, *>>()
+                        .associateBy { it["id"]?.toString() }
+                    completeChannelBatch(channelId, missing, versions, messages)
+                } catch (error: Throwable) {
+                    logger.error("Could not read channel Super Reaction metadata", error)
+                    completeChannelBatch(channelId, missing, versions, emptyMap())
+                }
+            },
+            { error ->
+                channelBatchFetches.remove(channelId)
+                logger.error("Could not load channel Super Reaction metadata", error)
+                completeChannelBatch(channelId, missing, versions, emptyMap())
+            },
+        )
+    }
+
+    private fun completeChannelBatch(
+        channelId: Long,
+        messageIds: List<Long>,
+        versions: Map<Long, Pair<Long, Long>>,
+        messages: Map<String?, Map<*, *>>,
+    ) {
+        messageIds.forEach { messageId ->
+            batchPendingMessages.remove(messageId)
+            val message = messages[messageId.toString()]
+            val reactions = message?.get("reactions") as? List<*>
+            val hasDetails = reactions != null && reactions.all {
+                val reaction = it as? Map<*, *>
+                reaction?.get("count_details") is Map<*, *> || reaction?.containsKey("burst_count") == true
+            }
+            val unchanged = versions[messageId] == Pair(
+                localMutationVersions[messageId] ?: 0L,
+                superReactionInvalidationVersions[messageId] ?: 0L,
+            )
+            if (message != null && hasDetails && unchanged) {
+                try {
+                    val hadBurst = superReactionCounts[messageId]?.values?.any { it > 0 } == true
+                    val bursts = parseSuperReactionCounts(messageId, GsonUtils.gson.toJson(message))
+                    superReactionCounts[messageId] = ConcurrentHashMap(bursts)
+                    superReactionFetchTimes[messageId] = SystemClock.elapsedRealtime()
+                    if (hadBurst || bursts.values.any { it > 0 }) refreshSuperReactionStyles(messageId)
+                    refreshManageReactionUsers(messageId)
+                    completeMetadataWaiters(messageId, true)
+                    return@forEach
+                } catch (error: Throwable) {
+                    logger.error("Could not read Super Reaction details", error)
+                }
+            }
+            // A message outside this window, or lacking burst fields, needs its own lookup.
+            fetchSuperReactionMetadata(channelId, messageId)
+        }
+    }
+
     private fun fetchSuperReactionMetadata(channelId: Long, messageId: Long, callback: ((Boolean) -> Unit)? = null) {
         if (!running || channelId == 0L || messageId == 0L) {
             callback?.invoke(false)
@@ -919,9 +1046,11 @@ class SuperReactions : Plugin() {
                 val dirty = version != (superReactionInvalidationVersions[messageId] ?: 0L)
                 try {
                     val body = extractMessageFromList(response.body, messageId) ?: error("Message was not returned")
-                    superReactionCounts[messageId] = ConcurrentHashMap(parseSuperReactionCounts(messageId, body))
+                    val hadBurst = superReactionCounts[messageId]?.values?.any { it > 0 } == true
+                    val bursts = parseSuperReactionCounts(messageId, body)
+                    superReactionCounts[messageId] = ConcurrentHashMap(bursts)
                     superReactionFetchTimes[messageId] = SystemClock.elapsedRealtime()
-                    refreshSuperReactionStyles(messageId)
+                    if (hadBurst || bursts.values.any { it > 0 }) refreshSuperReactionStyles(messageId)
                     refreshManageReactionUsers(messageId)
                     completeMetadataWaiters(messageId, true)
                     // Publish useful snapshots during continuous activity, then follow up.
@@ -997,15 +1126,6 @@ class SuperReactions : Plugin() {
                 colors[normalizeReactionKey(key)!!] = it
             }
         }
-        metadata.normal.keys.forEach {
-            if (it in
-                metadata.bursts
-            ) {
-                removeKnownNormalReaction(messageId, it)
-            } else {
-                markKnownNormalReaction(messageId, it)
-            }
-        }
         val ownKeys = metadata.owned.flatMap { reactionStateKeys(messageId, it) }.toSet()
         normalReactionCounts[messageId] = ConcurrentHashMap(metadata.normal)
         superReactionColors[messageId] = colors
@@ -1032,26 +1152,25 @@ class SuperReactions : Plugin() {
             val key = emoji?.c()
             val burstCount = getSuperReactionCount(messageId, key)
             val normalCount = getNormalReactionCount(messageId, key)
-            if ((burstCount ?: 0) <= 0 &&
-                (normalCount == 0 || (normalCount == null && isMetadataCurrent(messageId)))
-            ) {
-                continue
-            }
             if (burstCount != null && burstCount > 0) {
                 val burst = MessageReaction(burstCount, emoji, false)
                 expanded.add(burst)
                 types[burst] = true
-                val normals = normalCount ?: maxOf(0, reaction.a() - burstCount)
+                val normals = if (reaction.a() >= burstCount) {
+                    reaction.a() - burstCount
+                } else {
+                    normalCount ?: 0
+                }
                 if (normals > 0) {
                     val normal = MessageReaction(normals, emoji, reaction.c())
                     expanded.add(normal)
                     types[normal] = false
                 }
             } else {
-                val normal = if (normalCount == null) reaction else MessageReaction(normalCount, emoji, reaction.c())
-                expanded.add(normal)
-                // A cold untyped pill must resolve metadata before choosing an endpoint.
-                if (normalCount != null || isKnownNormalReaction(messageId, key)) types[normal] = false
+                // Discord updates this reaction and its `me` bit optimistically. The
+                // snapshot's normal count can already be stale after a tap.
+                expanded.add(reaction)
+                if (isMetadataCurrent(messageId)) types[reaction] = false
             }
         }
         expandedReactionTypes[messageId] = types
@@ -1325,13 +1444,10 @@ class SuperReactions : Plugin() {
         val background = cloneDrawable(view.background)
         val description = view.contentDescription
         val shine = SuperReactionDrawable(cloneDrawable(background), view.resources.displayMetrics.density)
-        private var firstColor: ColorStateList? = null
-        private var secondColor: ColorStateList? = null
-
-        fun captureTextColors(view: ReactionView) {
-            firstColor = counter(view, "counter_text_1")?.textColors
-            secondColor = counter(view, "counter_text_2")?.textColors
-        }
+        // ReactionView.a() may leave previously tinted TextViews unchanged when this
+        // holder is recycled. Capture the native state only on its first binding.
+        private val firstColor: ColorStateList? = counter(view, "counter_text_1")?.textColors
+        private val secondColor: ColorStateList? = counter(view, "counter_text_2")?.textColors
 
         fun restoreTextColors(view: ReactionView) {
             firstColor?.let { counter(view, "counter_text_1")?.setTextColor(it) }
@@ -1432,7 +1548,6 @@ class SuperReactions : Plugin() {
                 clearCompletedSuperReactionRemoval(messageId, key)
                 locallySentSuperReactions.addAll(reactionStateKeys(messageId, key))
                 val displayKey = displayReactionKey(key)
-                removeKnownNormalReaction(messageId, displayKey)
                 markOwnedSuperReaction(messageId, displayKey)
                 localMutationVersions.merge(messageId, 1L, Long::plus)
                 finishReactionAction(messageId, key)
@@ -1613,7 +1728,8 @@ class SuperReactions : Plugin() {
         ).forEach { it.clear() }
         listOf(
             superReactionFetches,
-            knownNormalReactions,
+            channelBatchFetches,
+            batchPendingMessages,
             locallySentSuperReactions,
             ownedSuperReactions,
             pendingSuperReactionRemovals,

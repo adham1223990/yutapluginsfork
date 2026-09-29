@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.media.AudioManager
 import android.graphics.Color
 import android.graphics.PorterDuff
 import android.net.Uri
@@ -40,6 +41,7 @@ import com.discord.widgets.chat.list.entries.EmbedEntry
 import com.discord.widgets.media.WidgetMedia
 import java.util.Locale
 import java.util.WeakHashMap
+import java.util.concurrent.ConcurrentHashMap
 
 @AliucordPlugin(requiresRestart = true)
 @Suppress("unused")
@@ -52,10 +54,49 @@ class PlayEmbeds : Plugin() {
     private val inlineVideoPlayers = WeakValueMap<ViewGroup, InlineVideoState>()
     private val spotifyPlayButtons = WeakValueMap<ViewGroup, ImageView>()
     private val fullscreenPlayers = WeakValueMap<WebView, FullscreenState>()
+    // Kept separate from row state because audio-focus callbacks can arrive on
+    // Chromium threads while chat rows are being rebound on the main thread.
+    private val activeEmbedWebViews = ConcurrentHashMap.newKeySet<WebView>()
 
     override fun start(context: Context) {
         patchEmbedRows()
         patchNativeHostedLaunches()
+        patchWebViewAudioFocus()
+    }
+
+    /**
+     * Chromium asks Android for exclusive audio focus whenever a WebView starts
+     * media. Report focus as granted for an attached PlayEmbeds player without
+     * forwarding that request to the system, so other apps keep their audio.
+     *
+     * Both overloads are patched because the Android System WebView decides
+     * which one to use. The Chromium stack check keeps Discord's native media,
+     * calls, and non-WebView audio on Android's normal focus path.
+     */
+    private fun patchWebViewAudioFocus() {
+        val audioManager = AudioManager::class.java
+        val shouldSuppress = {
+            activeEmbedWebViews.isNotEmpty() && Thread.currentThread().stackTrace.any { element ->
+                element.className.startsWith("org.chromium.") ||
+                    element.className.startsWith("com.android.webview.chromium.")
+            }
+        }
+        val suppressFocus = PreHook { frame ->
+            if (shouldSuppress()) frame.setResult(AudioManager.AUDIOFOCUS_REQUEST_GRANTED)
+        }
+        // Present since Android 8. Resolve by name so devices on older Android
+        // versions can still load the plugin and use the legacy overload below.
+        runCatching { Class.forName("android.media.AudioFocusRequest") }.getOrNull()?.let { requestClass ->
+            audioManager.methods.firstOrNull { method ->
+                method.name == "requestAudioFocus" && method.parameterTypes.contentEquals(arrayOf(requestClass))
+            }?.let { patcher.patch(it, suppressFocus) }
+        }
+        audioManager.getMethod(
+            "requestAudioFocus",
+            AudioManager.OnAudioFocusChangeListener::class.java,
+            Int::class.javaPrimitiveType,
+            Int::class.javaPrimitiveType,
+        ).let { patcher.patch(it, suppressFocus) }
     }
 
     private fun patchEmbedRows() {
@@ -654,6 +695,7 @@ class PlayEmbeds : Plugin() {
         webView.tag = playerState
         hostedPlayers[playerContainer] = playerState
         playerParent.addView(webView, playerParams)
+        activeEmbedWebViews.add(webView)
         webView.bringToFront()
         playerContainer.requestLayout()
         loadHostedPlayer(webView, embed)
@@ -895,6 +937,7 @@ class PlayEmbeds : Plugin() {
         webView.tag = playerState
         inlineVideoPlayers[container] = playerState
         hostedEmbeds[container] = embed
+        activeEmbedWebViews.add(webView)
         // loadData uses a data URL: '#' truncates unencoded HTML and '%' can
         // decode signed/redirect URLs. An HTTP(S) base loads the HTML verbatim.
         val baseUrl = embed.l()?.takeIf(EmbedUrls::isHttpUrl) ?: videoUrl
@@ -913,6 +956,7 @@ class PlayEmbeds : Plugin() {
 
     private fun removeInlineVideoPlayer(container: ViewGroup) {
         val state = inlineVideoPlayers.remove(container) ?: return
+        activeEmbedWebViews.remove(state.webView)
         hideFullscreen(state.webView)
         state.webView.tag = null
         state.webView.stopLoading()
@@ -932,6 +976,7 @@ class PlayEmbeds : Plugin() {
         val state = hostedPlayers.remove(container) ?: return
         val replacement = state.replacement
         val webView = state.webView
+        activeEmbedWebViews.remove(webView)
         hideFullscreen(webView)
         webView.tag = null
         webView.stopLoading()
@@ -1139,6 +1184,7 @@ class PlayEmbeds : Plugin() {
         inlineVideoPlayers.clear()
         fullscreenPlayers.clear()
         spotifyPlayButtons.clear()
+        activeEmbedWebViews.clear()
         embedRowKeys.clear()
         searchEmbedClicks.clear()
         patcher.unpatchAll()
