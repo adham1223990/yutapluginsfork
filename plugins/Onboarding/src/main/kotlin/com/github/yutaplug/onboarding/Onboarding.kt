@@ -331,8 +331,10 @@ class Onboarding : Plugin() {
                 setFiltered(guildId, true)
             },
             onPersonalizedChanged = { enabled -> setFiltered(guildId, enabled) },
+            isChannelHidden = { channelId -> isChannelHidden(guildId, channelId) },
             onChannelsChanged = { changes ->
                 manualOptIns.getOrPut(guildId) { mutableMapOf() }.putAll(changes)
+                changes.forEach { (channelId, enabled) -> setChannelHidden(guildId, channelId, !enabled) }
                 refreshChannelLists()
             },
             onClosed = { screen = null },
@@ -345,11 +347,12 @@ class Onboarding : Plugin() {
         config.prompts.forEach { prompt ->
             prompt.options.filter { it.id in config.responses }.forEach { visible.addAll(it.channelIds) }
         }
+        visible.removeAll { isChannelHidden(guildId, it) }
         val settingsForGuild = StoreStream.getUserGuildSettings().guildSettings[guildId]
         StoreStream.getChannels().getChannelsForGuild(guildId)?.keys?.forEach { id ->
             val opted = manualOptIns[guildId]?.get(id)
                 ?: (settingsForGuild?.getChannelOverride(id)?.flags?.and(OnboardingApi.OPTED_IN_FLAG) != 0)
-            if (opted) visible += id
+            if (opted && !isChannelHidden(guildId, id)) visible += id
         }
         visible += StoreStream.getChannelsSelected().id
         val parentIds = visible.mapNotNull { id ->
@@ -375,6 +378,16 @@ class Onboarding : Plugin() {
     private fun isFiltered(guildId: Long): Boolean {
         val userId = runCatching { StoreStream.getUsers().me.id }.getOrNull() ?: return false
         return settings.getBool("personalized_${userId}_$guildId", false)
+    }
+
+    private fun isChannelHidden(guildId: Long, channelId: Long): Boolean {
+        val userId = runCatching { StoreStream.getUsers().me.id }.getOrNull() ?: return false
+        return settings.getBool("hidden_${userId}_${guildId}_$channelId", false)
+    }
+
+    private fun setChannelHidden(guildId: Long, channelId: Long, hidden: Boolean) {
+        val userId = runCatching { StoreStream.getUsers().me.id }.getOrNull() ?: return
+        settings.setBool("hidden_${userId}_${guildId}_$channelId", hidden)
     }
 
     private fun setFiltered(guildId: Long, enabled: Boolean) {

@@ -34,6 +34,7 @@ internal class OnboardingScreen(
     private val onConfigChanged: (OnboardingConfig) -> Unit,
     private val onInitialComplete: () -> Unit,
     private val onPersonalizedChanged: (Boolean) -> Unit,
+    private val isChannelHidden: (Long) -> Boolean,
     private val onChannelsChanged: (Map<Long, Boolean>) -> Unit,
     private val onClosed: () -> Unit,
 ) {
@@ -397,12 +398,12 @@ internal class OnboardingScreen(
 
     private fun renderBrowse(data: OnboardingConfig) {
         label("Browse Channels", 18f, normal)
-        label("Add channels to your list. Default channels stay visible for everyone.", 13f, muted)
+        label("Choose which channels appear in your server list.", 13f, muted)
         content.addView(Utils.createCheckedSetting(
             activity,
             CheckedSetting.ViewType.SWITCH,
             "Show all channels",
-            "Turn off to show only channels you chose, plus the server's default channels.",
+            "Turn off to show your selected channels. Default channels start selected.",
         ).apply {
             isChecked = !personalized
             setOnCheckedListener { showAll ->
@@ -442,15 +443,15 @@ internal class OnboardingScreen(
                 }
             }, LinearLayout.LayoutParams(0, -2, 1f))
             val allSelected = if (members.isEmpty()) {
-                categoryId != 0L && flags[categoryId]?.and(OnboardingApi.OPTED_IN_FLAG) != 0
-            } else members.all { isFixed(data, it.id) || flags[it.id]?.and(OnboardingApi.OPTED_IN_FLAG) != 0 }
+                categoryId != 0L && isChannelSelected(data, categoryId)
+            } else members.all { isChannelSelected(data, it.id) }
             row.addView(CheckBox(activity).apply {
                 isChecked = allSelected
-                isEnabled = categoryId != 0L || members.any { !isFixed(data, it.id) }
+                isEnabled = categoryId != 0L || members.isNotEmpty()
                 buttonTintList = ColorStateList.valueOf(brand)
                 contentDescription = "Show $heading"
                 setOnCheckedChangeListener { _, enabled ->
-                    updateCategory(data, categoryId, members, enabled, this)
+                    updateCategory(categoryId, members, enabled, this)
                 }
             }, LinearLayout.LayoutParams(dp(48), dp(48)))
             content.addView(row, LinearLayout.LayoutParams(-1, -2))
@@ -458,20 +459,22 @@ internal class OnboardingScreen(
         }
     }
 
-    private fun isFixed(data: OnboardingConfig, channelId: Long): Boolean =
-        channelId in data.defaultChannelIds || data.prompts.any { prompt ->
+    private fun isChannelSelected(data: OnboardingConfig, channelId: Long): Boolean {
+        if (isChannelHidden(channelId)) return false
+        val addedByOnboarding = channelId in data.defaultChannelIds || data.prompts.any { prompt ->
             prompt.options.any { it.id in selected && channelId in it.channelIds }
         }
+        return addedByOnboarding || flags[channelId]?.and(OnboardingApi.OPTED_IN_FLAG) != 0
+    }
 
     private fun updateCategory(
-        data: OnboardingConfig,
         categoryId: Long,
         members: List<BrowseChannel>,
         enabled: Boolean,
         checkBox: CheckBox,
     ) {
         checkBox.isEnabled = false
-        val ids = members.filterNot { isFixed(data, it.id) }.map(BrowseChannel::id).toMutableList()
+        val ids = members.map(BrowseChannel::id).toMutableList()
         if (categoryId != 0L) ids += categoryId
         val oldFlags = ids.associateWith { flags[it] ?: 0 }
         val task = generation
@@ -504,7 +507,6 @@ internal class OnboardingScreen(
         val assignedByPrompt = data.prompts.any { prompt ->
             prompt.options.any { it.id in selected && channel.id in it.channelIds }
         }
-        val optedIn = flags[channel.id]?.and(OnboardingApi.OPTED_IN_FLAG) != 0
         val setting = Utils.createCheckedSetting(
             activity,
             CheckedSetting.ViewType.CHECK,
@@ -515,10 +517,9 @@ internal class OnboardingScreen(
                 else -> ""
             },
         )
-        setting.isChecked = isDefault || assignedByPrompt || optedIn
-        setting.isEnabled = !isDefault && !assignedByPrompt
+        setting.isChecked = isChannelSelected(data, channel.id)
         var updating = false
-        if (setting.isEnabled) setting.setOnCheckedListener { enabled ->
+        setting.setOnCheckedListener { enabled ->
             if (updating) return@setOnCheckedListener
             updating = true
             setting.isEnabled = false
