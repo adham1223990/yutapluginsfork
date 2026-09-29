@@ -1,6 +1,7 @@
 package com.github.yutaplug.profileboard
 
 import android.content.Context
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
@@ -11,6 +12,7 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.core.content.res.ResourcesCompat
 import com.aliucord.Utils
 import com.aliucord.annotations.AliucordPlugin
 import com.aliucord.entities.Plugin
@@ -38,6 +40,14 @@ class ProfileBoard : Plugin() {
     private class Binding(
         val root: View,
         val content: LinearLayout,
+        val header: View,
+        val headerElevation: Float,
+        val editActions: View,
+        val editActionsElevation: Float,
+        val actionsDivider: View,
+        var actionsDividerVisibility: Int,
+        val actions: View,
+        val actionsElevation: Float,
         val tabs: LinearLayout,
         val mainTab: TextView,
         val boardTab: TextView,
@@ -77,12 +87,18 @@ class ProfileBoard : Plugin() {
                 val state = call.args[0] as? WidgetUserSheetViewModel.ViewState.Loaded ?: return@Hook
                 val root = sheet.view ?: return@Hook
                 var binding = bindings[sheet]
+                val existing = binding != null && binding.root === root
                 if (binding == null || binding.root !== root) {
                     binding?.let(::remove)
                     binding = install(root) ?: return@Hook
                     bindings[sheet] = binding
                 }
                 val current = binding
+                current.header.elevation = 0f
+                current.editActions.elevation = 0f
+                if (existing) current.actionsDividerVisibility = current.actionsDivider.visibility
+                current.actionsDivider.visibility = View.GONE
+                current.actions.elevation = 0f
                 root.post {
                     if (bindings[sheet] === current && sheet.view === root) {
                         removeOldRows(current.content, current.tabs, current.boardContent)
@@ -115,6 +131,9 @@ class ProfileBoard : Plugin() {
 
     private fun install(root: View): Binding? {
         val content = root.findViewById<LinearLayout>(Utils.getResId("user_sheet_content", "id")) ?: return null
+        val header = root.findViewById<View>(Utils.getResId("user_sheet_profile_header_view", "id"))?.parent as? View ?: return null
+        val editActions = root.findViewById<View>(Utils.getResId("user_sheet_profile_edit_container", "id")) ?: return null
+        val actionsDivider = root.findViewById<View>(Utils.getResId("user_sheet_profile_actions_divider", "id")) ?: return null
         val actions = root.findViewById<View>(Utils.getResId("user_sheet_profile_actions_container", "id")) ?: return null
         removeOldRows(content)
         val index = content.indexOfChild(actions)
@@ -141,8 +160,14 @@ class ProfileBoard : Plugin() {
             tag = CONTENT_MARKER
         }
         content.addView(boardContent, index + 2, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        val binding = Binding(root, content, tabs, mainTab.label, boardTab.label,
+        val binding = Binding(root, content, header, header.elevation, editActions, editActions.elevation,
+            actionsDivider, actionsDivider.visibility,
+            actions, actions.elevation, tabs, mainTab.label, boardTab.label,
             mainTab.indicator, boardTab.indicator, boardContent, originals)
+        header.elevation = 0f
+        editActions.elevation = 0f
+        actionsDivider.visibility = View.GONE
+        actions.elevation = 0f
         mainTab.frame.setOnClickListener { select(binding, false) }
         boardTab.frame.setOnClickListener { select(binding, true) }
         select(binding, false)
@@ -486,6 +511,15 @@ class ProfileBoard : Plugin() {
             text = title
             gravity = Gravity.CENTER
             isAllCaps = false
+            val fontValue = TypedValue()
+            val fontAttr = Utils.getResId("font_primary_bold", "attr")
+            val fontId = if (fontAttr != 0 && context.theme.resolveAttribute(fontAttr, fontValue, true)) {
+                fontValue.resourceId
+            } else {
+                Utils.getResId("whitney_bold", "font")
+            }
+            val boldFont = if (fontId != 0) runCatching { ResourcesCompat.getFont(context, fontId) }.getOrNull() else null
+            if (boldFont != null) typeface = boldFont else setTypeface(typeface, Typeface.BOLD)
         }
         frame.addView(label, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         val indicator = View(context).apply {
@@ -517,6 +551,10 @@ class ProfileBoard : Plugin() {
     private fun remove(binding: Binding) {
         binding.generation++
         restore(binding)
+        binding.header.elevation = binding.headerElevation
+        binding.editActions.elevation = binding.editActionsElevation
+        binding.actionsDivider.visibility = binding.actionsDividerVisibility
+        binding.actions.elevation = binding.actionsElevation
         binding.content.removeView(binding.tabs)
         binding.content.removeView(binding.boardContent)
         binding.boardContent.removeAllViews()
