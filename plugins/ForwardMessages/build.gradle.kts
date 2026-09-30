@@ -1,8 +1,9 @@
-version = "1.0.5"
+version = "1.0.6"
 description = "Forward messages to your channel of your liking."
-
 aliucord {
     changelog.set("""
+        # 1.0.6
+        * Kotlin rewrite
         # 1.0.5
         * Add compatibility with Android 7 and fix context menu button theming
         #1.0.4

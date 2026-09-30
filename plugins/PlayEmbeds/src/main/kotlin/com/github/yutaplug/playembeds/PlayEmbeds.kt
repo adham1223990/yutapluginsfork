@@ -47,6 +47,7 @@ import java.util.concurrent.ConcurrentHashMap
 @Suppress("unused")
 class PlayEmbeds : Plugin() {
     private val embedLinks = WeakHashMap<ViewGroup, EmbedLink>()
+    private val configuredEmbeds = WeakHashMap<View, MessageEmbed>()
     private val hostedEmbeds = WeakHashMap<ViewGroup, MessageEmbed>()
     private val hostedPlayers = WeakValueMap<ViewGroup, HostedPlayerState>()
     private val embedRowKeys = WeakHashMap<ViewGroup, Pair<Long, Int>>()
@@ -59,6 +60,7 @@ class PlayEmbeds : Plugin() {
     private val activeEmbedWebViews = ConcurrentHashMap.newKeySet<WebView>()
 
     override fun start(context: Context) {
+        EmbedUrls.fxVideoResolver = FxVideoResolver()
         patchEmbedRows()
         patchNativeHostedLaunches()
         patchWebViewAudioFocus()
@@ -135,6 +137,7 @@ class PlayEmbeds : Plugin() {
             Hook { frame ->
                 val item = frame.thisObject as? WidgetChatListAdapterItemEmbed ?: return@Hook
                 val entry = frame.args.getOrNull(1) as? EmbedEntry ?: return@Hook
+                configuredEmbeds[item.itemView] = entry.embed
                 embedContainers(item.itemView).forEach { container ->
                     embedRowKeys[container] = entry.message.id to entry.embedIndex
                     hostedPlayers[container]?.let { state ->
@@ -156,7 +159,22 @@ class PlayEmbeds : Plugin() {
                     }
                     return@Hook
                 }
-                val link = EmbedUrls.embedLink(entry.embed) ?: return@Hook
+                val link = EmbedUrls.embedLink(entry.embed)
+                if (link == null) {
+                    if (entry.embed.m() == null) {
+                        val root = java.lang.ref.WeakReference(item.itemView)
+                        val embed = entry.embed
+                        val rowKey = entry.message.id to entry.embedIndex
+                        EmbedUrls.fxVideoResolver?.resolve(embed.l()) { video ->
+                            val view = root.get()
+                            if (video != null && view != null && configuredEmbeds[view] === embed &&
+                                embedContainers(view).any { embedRowKeys[it] == rowKey }) {
+                                EmbedUrls.embedLink(embed)?.let { attachMediaClickHandlers(view, it) }
+                            }
+                        }
+                    }
+                    return@Hook
+                }
                 attachMediaClickHandlers(item.itemView, link)
             },
         )
@@ -1174,6 +1192,9 @@ class PlayEmbeds : Plugin() {
     }
 
     override fun stop(context: Context) {
+        EmbedUrls.fxVideoResolver?.close()
+        EmbedUrls.fxVideoResolver = null
+        configuredEmbeds.clear()
         ArrayList(fullscreenPlayers.keys).forEach(::hideFullscreen)
         ArrayList(hostedPlayers.keys).forEach(::removeHostedPlayer)
         ArrayList(inlineVideoPlayers.keys).forEach(::removeInlineVideoPlayer)

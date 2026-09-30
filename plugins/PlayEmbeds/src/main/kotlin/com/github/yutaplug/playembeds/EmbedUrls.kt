@@ -22,6 +22,7 @@ internal enum class HostedProvider { YOUTUBE, SOUNDCLOUD, SPOTIFY }
 
 /** Decides which URLs can play locally and builds provider player URLs. */
 internal object EmbedUrls {
+    var fxVideoResolver: FxVideoResolver? = null
     private const val MAX_REDIRECT_DEPTH = 4
 
     private val VIDEO_EXTENSIONS = setOf(
@@ -53,7 +54,7 @@ internal object EmbedUrls {
     fun genericVideoUrl(embed: MessageEmbed): String? {
         if (isGifEmbed(embed)) return null
         if (isDirectLinkedMediaEmbed(embed) || EmbedResourceUtils.INSTANCE.isInlineEmbed(embed)) return null
-        val video = embed.m() ?: return null
+        val video = embed.m() ?: return fxVideoResolver?.cached(embed.l())
         val providerName = embed.g()?.a()?.lowercase(Locale.ROOT)
         if (providerName in HOSTED_PROVIDER_NAMES) return null
 
