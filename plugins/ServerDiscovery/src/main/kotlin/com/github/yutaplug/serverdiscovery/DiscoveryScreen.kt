@@ -12,6 +12,8 @@ import android.os.Looper
 import android.text.Editable
 import android.text.TextUtils
 import android.text.TextWatcher
+import android.view.KeyEvent
+import android.view.inputmethod.InputMethodManager
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -33,6 +35,7 @@ import com.discord.stores.StoreAuthentication
 import com.discord.stores.StoreStream
 import com.discord.utilities.color.ColorCompat
 import com.discord.utilities.rest.RestAPI
+import com.discord.views.SearchInputView
 import com.discord.views.GuildView
 import com.discord.views.directories.ServerDiscoveryHeader
 import com.discord.views.guilds.ServerMemberCount
@@ -78,6 +81,10 @@ internal class DiscoveryScreen(
     private var generation = 0
     private var closed = false
     private var searchTask: Runnable? = null
+    private var searchMode = false
+    private lateinit var toolbar: Toolbar
+    private lateinit var categoryScroll: HorizontalScrollView
+    private lateinit var searchInput: SearchInputView
     private lateinit var categoryStrip: LinearLayout
     private lateinit var content: FrameLayout
     private lateinit var results: RecyclerView
@@ -95,6 +102,12 @@ internal class DiscoveryScreen(
             results.adapter = null
             content.removeAllViews()
             onClosed()
+        }
+        dialog.setOnKeyListener { _, keyCode, event ->
+            if (searchMode && keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
+                closeSearch()
+                true
+            } else false
         }
         dialog.show()
         dialog.window?.apply {
@@ -115,7 +128,7 @@ internal class DiscoveryScreen(
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(primary)
         }
-        root.addView(Toolbar(context).apply {
+        toolbar = Toolbar(context).apply {
             title = "Discover"
             setTitleTextAppearance(context, Utils.getResId("UiKit_TextAppearance_Toolbar_Title", "style"))
             setTitleTextColor(normal)
@@ -123,20 +136,57 @@ internal class DiscoveryScreen(
             if (back != 0) setNavigationIcon(back)
             navigationIcon?.setTint(normal)
             navigationContentDescription = "Back"
-            setNavigationOnClickListener { dismiss() }
-        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56)))
+            setNavigationOnClickListener { if (searchMode) closeSearch() else dismiss() }
+        }
+        root.addView(toolbar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56)))
 
         categoryStrip = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(dp(16), 0, dp(16), 0)
         }
-        root.addView(HorizontalScrollView(context).apply {
+        categoryScroll = HorizontalScrollView(context).apply {
             isHorizontalScrollBarEnabled = false
             addView(categoryStrip)
-        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)))
+        }
+        root.addView(categoryScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)))
         renderCategories()
 
-        status = TextView(context).apply {
+        searchInput = SearchInputView(context, null).apply {
+            setHint("Search for communities")
+            visibility = View.GONE
+            val edit = editText as EditText
+            edit.imeOptions = EditorInfo.IME_ACTION_SEARCH
+            edit.addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun afterTextChanged(s: Editable?) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    b(s?.toString().orEmpty())
+                    if (!searchMode) return
+                    searchTask?.let(main::removeCallbacks)
+                    val nextQuery = trimWhitespace(s?.toString().orEmpty())
+                    searchTask = Runnable {
+                        if (!closed && searchMode && nextQuery != query) {
+                            query = nextQuery
+                            resetResults()
+                        }
+                    }.also { main.postDelayed(it, 350) }
+                }
+            })
+            edit.setOnEditorActionListener { _, action, _ ->
+                if (action != EditorInfo.IME_ACTION_SEARCH) false else {
+                    searchTask?.let(main::removeCallbacks)
+                    query = trimWhitespace(edit.text.toString())
+                    resetResults()
+                    hideKeyboard()
+                    true
+                }
+            }
+        }
+        root.addView(searchInput, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)).apply {
+            setMargins(dp(16), dp(8), dp(16), dp(16))
+        })
+
+        status = styledText("UiKit_TextView_Medium").apply {
             gravity = Gravity.CENTER
             textSize = 15f
             setTextColor(muted)
@@ -239,18 +289,27 @@ internal class DiscoveryScreen(
         adapter.clear()
         status.visibility = View.GONE
         results.scrollToPosition(0)
-        loadPage()
+        if (searchMode && !hasText(query)) {
+            progress.visibility = View.GONE
+            status.text = "PROTIP: You can search for a server by name, category, or keyword. Try any shared interest or hobby, no matter how obscure!"
+            status.setPadding(dp(32), dp(32), dp(32), dp(20))
+            status.setOnClickListener(null)
+            status.visibility = View.VISIBLE
+        } else {
+            status.setPadding(dp(24), dp(20), dp(24), dp(20))
+            loadPage()
+        }
     }
 
     private fun loadPage() {
-        if (closed || loading || offset >= total) return
+        if (closed || loading || offset >= total || (searchMode && !hasText(query))) return
         loading = true
         progress.visibility = View.VISIBLE
         status.visibility = View.GONE
         val requestGeneration = generation
         val requestOffset = offset
         val requestQuery = query
-        val requestCategory = selectedCategory
+        val requestCategory = if (searchMode) null else selectedCategory
         worker.execute {
             val result = runCatching {
                 val route = if (!hasText(requestQuery)) {
@@ -336,6 +395,41 @@ internal class DiscoveryScreen(
         }
     }
 
+    private fun openSearch() {
+        if (searchMode || closed) return
+        searchMode = true
+        toolbar.title = "Search for communities"
+        categoryScroll.visibility = View.GONE
+        searchInput.visibility = View.VISIBLE
+        query = ""
+        searchInput.setText("")
+        resetResults()
+        searchInput.editText.requestFocus()
+        searchInput.post {
+            if (!closed && searchMode) {
+                (context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
+                    ?.showSoftInput(searchInput.editText, InputMethodManager.SHOW_IMPLICIT)
+            }
+        }
+    }
+
+    private fun hideKeyboard() {
+        (context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
+            ?.hideSoftInputFromWindow(searchInput.windowToken, 0)
+    }
+
+    private fun closeSearch() {
+        searchTask?.let(main::removeCallbacks)
+        hideKeyboard()
+        searchMode = false
+        query = ""
+        searchInput.clearFocus()
+        searchInput.visibility = View.GONE
+        categoryScroll.visibility = View.VISIBLE
+        toolbar.title = "Discover"
+        resetResults()
+    }
+
     private fun openServer(guildId: Long) {
         // Lurking can open Discord's welcome sheet even when it has no channels to show.
         StoreStream.getGuildWelcomeScreens().markWelcomeScreenShown(guildId)
@@ -390,44 +484,17 @@ internal class DiscoveryScreen(
             layoutParams = (layoutParams as ConstraintLayout.LayoutParams).apply { width = 0 }
         }
         val searchLayout = hero.findViewById<FrameLayout>(Utils.getResId("server_discovery_header_search_layout", "id"))
-        // Keep the native header's search surface and icon, replacing only its label.
         searchLayout?.let { surface ->
-            var label: TextView? = null
             var index = 0
             while (index < surface.childCount) {
                 val child = surface.getChildAt(index++)
-                if (child is TextView) {
-                    label = child
-                    break
-                }
+                if (child is TextView) child.text = "Explore servers"
+                child.isFocusable = false
+                child.isClickable = false
             }
-            if (label != null) surface.removeView(label)
-            val search = EditText(context, null, 0, Utils.getResId("UiKit_TextInputLayout_EditText_SingleLine_Search", "style")).apply {
-                hint = "Explore servers"
-                setSingleLine(true)
-                imeOptions = EditorInfo.IME_ACTION_SEARCH
-                background = null
-                val searchTextColor = Utils.getResId("primary_600", "color")
-                setTextColor(if (searchTextColor != 0) context.resources.getColor(searchTextColor) else 0xFF4F545C.toInt())
-                setHintTextColor(muted)
-                setPadding(dp(4), 0, dp(36), 0)
-                setText(query)
-                addTextChangedListener(object : TextWatcher {
-                    override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-                    override fun afterTextChanged(s: Editable?) {}
-                    override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                        searchTask?.let(main::removeCallbacks)
-                        val newQuery = trimWhitespace(s?.toString().orEmpty())
-                        searchTask = Runnable {
-                            if (!closed && newQuery != query) {
-                                query = newQuery
-                                resetResults()
-                            }
-                        }.also { main.postDelayed(it, 350) }
-                    }
-                })
-            }
-            surface.addView(search, 0, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)))
+            surface.contentDescription = "Search for communities"
+            surface.isFocusable = true
+            hero.setButtonOnClickListener { openSearch() }
         }
         header.addView(hero, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(300)))
         header.addView(styledText("UiKit_TextView_H1").apply {
@@ -442,11 +509,12 @@ internal class DiscoveryScreen(
     private inner class GuildAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
         private val items = mutableListOf<Guild>()
         val guildCount get() = items.size
+        private val headerCount get() = if (searchMode) 0 else 1
 
         inner class Holder(val root: LinearLayout, val banner: SimpleDraweeView, val icon: GuildView,
                            val name: TextView, val description: TextView, val stats: ServerMemberCount) : RecyclerView.ViewHolder(root)
 
-        override fun getItemViewType(position: Int) = if (position == 0) 0 else 1
+        override fun getItemViewType(position: Int) = if (headerCount == 1 && position == 0) 0 else 1
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
             if (viewType == 0) return object : RecyclerView.ViewHolder(createHero()) {}
@@ -496,7 +564,7 @@ internal class DiscoveryScreen(
         }
 
         override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
-            if (position == 0) {
+            if (headerCount == 1 && position == 0) {
                 holder.itemView.findViewWithTag<TextView>("discovery_section_title")?.text = when {
                     hasText(query) -> "Search Results"
                     selectedCategory != null -> categories.firstOrNull { it.id == selectedCategory }?.name ?: "Servers"
@@ -505,7 +573,7 @@ internal class DiscoveryScreen(
                 return
             }
             holder as Holder
-            val guild = items[position - 1]
+            val guild = items[position - headerCount]
             holder.name.text = guild.name
             val badge = if (guild.verified) Utils.getResId("ic_verified_badge", "drawable") else 0
             holder.name.setCompoundDrawablesRelativeWithIntrinsicBounds(badge, 0, 0, 0)
@@ -529,17 +597,15 @@ internal class DiscoveryScreen(
             super.onViewRecycled(holder)
         }
 
-        override fun getItemCount() = items.size + 1
+        override fun getItemCount() = items.size + headerCount
 
         fun clear() {
-            val size = items.size
             items.clear()
-            if (size > 0) notifyItemRangeRemoved(1, size)
-            notifyItemChanged(0)
+            notifyDataSetChanged()
         }
 
         fun append(incoming: List<Guild>) {
-            val start = items.size + 1
+            val start = items.size + headerCount
             items.addAll(incoming)
             if (incoming.isNotEmpty()) notifyItemRangeInserted(start, incoming.size)
         }
