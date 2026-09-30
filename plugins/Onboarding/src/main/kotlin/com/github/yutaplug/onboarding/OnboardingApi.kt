@@ -48,12 +48,6 @@ internal data class BrowseChannel(
 )
 
 internal class OnboardingApi(private val expectedToken: String) {
-    fun hasCompletedOnboarding(guildId: Long): Boolean {
-        val member = request("/users/@me/guilds/$guildId/member")
-        check(member.has("flags")) { "Discord did not return onboarding status" }
-        return member.optInt("flags") and COMPLETED_ONBOARDING_FLAG != 0
-    }
-
     fun getConfig(guildId: Long): OnboardingConfig? {
         val response = request("/guilds/$guildId/onboarding")
         val json = response.optJSONObject("onboarding") ?: response
@@ -213,7 +207,6 @@ internal class OnboardingApi(private val expectedToken: String) {
     }
 
     companion object {
-        private const val COMPLETED_ONBOARDING_FLAG = 1 shl 1
         const val OPTED_IN_FLAG = 1 shl 12
         private const val VIEW_CHANNEL_PERMISSION = 1L shl 10
         private const val CATEGORY_TYPE = 4

@@ -26,6 +26,8 @@ import android.text.Editable
 import android.text.TextWatcher
 import android.text.TextUtils
 import android.text.format.DateUtils
+import android.util.TypedValue
+import androidx.appcompat.view.ContextThemeWrapper
 import androidx.appcompat.widget.Toolbar
 import androidx.core.widget.NestedScrollView
 import com.discord.views.SearchInputView
@@ -757,14 +759,16 @@ internal class OnboardingScreen(
     }
 
     private fun actionButton(text: String, primaryAction: Boolean, onClick: () -> Unit): TextView {
-        val nativeDialog = LayoutInflater.from(activity).inflate(
-            Utils.getResId("widget_notice_dialog", "layout"), null, false,
+        // Notice buttons require Discord's dialog theme, not the activity's button styles.
+        val dialogTheme = TypedValue()
+        val themeAttr = Utils.getResId("dialogTheme", "attr")
+        val context = if (themeAttr != 0 &&
+            activity.theme.resolveAttribute(themeAttr, dialogTheme, true) && dialogTheme.resourceId != 0
+        ) ContextThemeWrapper(activity, dialogTheme.resourceId) else activity
+        val buttonStyle = Utils.getResId(
+            if (primaryAction) "buttonBarPositiveButtonStyle" else "buttonBarNegativeButtonStyle", "attr",
         )
-        val button = nativeDialog.findViewById<MaterialButton>(Utils.getResId(
-            if (primaryAction) "OK_BUTTON" else "CANCEL_BUTTON", "id",
-        ))
-        (button.parent as ViewGroup).removeView(button)
-        return button.apply {
+        return MaterialButton(context, null, buttonStyle).apply {
             this.text = text
             isEnabled = !saving
             setOnClickListener { onClick() }

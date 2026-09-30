@@ -21,6 +21,7 @@ import java.util.WeakHashMap
 @AliucordPlugin
 class Devices : Plugin() {
     private val rows = WeakHashMap<WidgetSettings, TextView>()
+    private val pages = java.util.Collections.newSetFromMap(WeakHashMap<DevicesPage, Boolean>())
     private val pendingCurrentReader = ThreadLocal<Model.JsonReader>()
 
     override fun start(context: Context) {
@@ -72,7 +73,7 @@ class Devices : Plugin() {
             background = anchor.background?.constantState?.newDrawable(anchor.resources)?.mutate()
             isClickable = true
             isFocusable = true
-            val iconId = Utils.getResId("ic_security_24dp", "drawable")
+            val iconId = Utils.getResId("ic_monitor_white_24dp", "drawable")
             val icon = if (iconId != 0) AppCompatResources.getDrawable(context, iconId)?.mutate() else null
             val tintAttr = Utils.getResId("colorInteractiveNormal", "attr")
             if (tintAttr != 0) icon?.setTintList(ColorStateList.valueOf(ColorCompat.getThemedColor(context, tintAttr)))
@@ -80,8 +81,8 @@ class Devices : Plugin() {
                 (24 * resources.displayMetrics.density + 0.5f).toInt())
             setCompoundDrawablesRelative(icon, null, null, null)
             setOnClickListener {
-                if (settings.isAdded && settings.parentFragmentManager.findFragmentByTag("DevicesSheet") == null) {
-                    DevicesSheet().show(settings.parentFragmentManager, "DevicesSheet")
+                if (settings.isAdded) {
+                    Utils.openPageWithProxy(context, DevicesPage().also { pages.add(it) })
                 }
             }
         }
@@ -96,6 +97,8 @@ class Devices : Plugin() {
         SessionApi.clearCurrentSession()
         rows.values.forEach { row -> (row.parent as? ViewGroup)?.removeView(row) }
         rows.clear()
+        pages.toList().forEach { it.close() }
+        pages.clear()
     }
 
     private companion object {

@@ -154,9 +154,6 @@ class Onboarding : Plugin() {
             sheet.dismiss()
             main.post { openScreen(activity, id, false) }
         }
-        ensureSheetAction(container, guildId, fontSource, ONBOARDING_TAG, "Check Onboarding", 1) { row, id ->
-            checkOnboarding(sheet, id, row)
-        }
     }
 
     private fun ensureSheetAction(
@@ -208,49 +205,6 @@ class Onboarding : Plugin() {
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         buttons += WeakReference(row)
         buttonGuilds[row] = guildId
-    }
-
-    private fun checkOnboarding(sheet: WidgetGuildProfileSheet, guildId: Long, row: TextView) {
-        if (!running || !row.isEnabled) return
-        val activity = sheet.activity ?: return
-        val requestedUserId = runCatching { StoreStream.getUsers().me.id }.getOrNull()
-        row.isEnabled = false
-        row.text = "Checking onboarding..."
-        val task = generation
-        worker.execute {
-            val result = runCatching {
-                val api = OnboardingApi(OnboardingApi.currentToken())
-                val config = api.getConfig(guildId)
-                val completed = if (config?.prompts?.any { it.inOnboarding } == true) {
-                    api.hasCompletedOnboarding(guildId)
-                } else null
-                config to completed
-            }
-            main.post {
-                if (!running || generation != task ||
-                    requestedUserId != runCatching { StoreStream.getUsers().me.id }.getOrNull()
-                ) return@post
-                row.isEnabled = true
-                row.text = "Check Onboarding"
-                result.onSuccess { (config, completed) ->
-                    cached[guildId] = config
-                    cacheTime[guildId] = SystemClock.elapsedRealtime()
-                    refreshChannelLists()
-                    when {
-                        config == null -> Utils.showToast("Discord returned no onboarding setup for this server")
-                        completed == null -> Utils.showToast("This server has no onboarding questions for joining")
-                        completed -> Utils.showToast("Onboarding is already complete")
-                        else -> {
-                            sheet.dismiss()
-                            main.post { openScreen(activity, guildId, true) }
-                        }
-                    }
-                }.onFailure { error ->
-                    logger.error("Could not check onboarding for guild $guildId", error)
-                    Utils.showToast(error.message ?: "Could not check onboarding")
-                }
-            }
-        }
     }
 
     private fun fetchConfig(guildId: Long, onReady: ((OnboardingConfig?) -> Unit)? = null) {
@@ -441,7 +395,6 @@ class Onboarding : Plugin() {
 
     private companion object {
         const val CHANNELS_TAG = "onboarding_channels_and_roles"
-        const val ONBOARDING_TAG = "onboarding_check_status"
         const val RETRY_DELAY_MS = 30_000L
         const val CACHE_DURATION_MS = 300_000L
     }
