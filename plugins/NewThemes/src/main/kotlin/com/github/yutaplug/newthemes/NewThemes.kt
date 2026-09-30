@@ -13,13 +13,12 @@ import com.aliucord.patcher.Hook
 import com.aliucord.patcher.PreHook
 import com.discord.models.domain.ModelPayload
 import com.discord.app.AppActivity
-import androidx.appcompat.app.AppCompatActivity
 import com.discord.models.domain.ModelUserSettings
 import com.discord.stores.StoreStream
 import com.discord.stores.StoreUserSettingsSystem
 import com.discord.views.CheckedSetting
 import com.discord.widgets.settings.WidgetSettingsAppearance
-import d0.z.d.d as DiscordCallableReference
+import de.robv.android.xposed.XposedBridge
 import java.util.WeakHashMap
 
 @AliucordPlugin
@@ -28,30 +27,34 @@ class NewThemes : Plugin() {
     private val pages = WeakHashMap<WidgetSettingsAppearance, Page>()
     private var sync: ThemeSync? = null
     private var palette: ThemePalette? = null
-    private val themeNames = WeakHashMap<Resources.Theme, String>()
+    private val activityThemes = WeakHashMap<AppActivity, ThemeChoice>()
+    private val comparingTheme = ThreadLocal<String>()
+    private var running = false
     @Volatile private var selected = ThemeChoice.ASH
 
     override fun start(context: Context) {
         val store = StoreStream.getUserSettingsSystem()
         selected = ThemeChoice.fromNative(store.theme)
+        running = true
         val bridge = ThemeSync(context.applicationContext, ::applyTheme) { message, error -> logger.warn(message, error) }
         sync = bridge
         try {
             palette = ThemePalette { selected }.also { it.start(context, patcher) }
             val themeName = Utils.getResId("theme_name", "attr")
             check(themeName != 0) { "Discord theme name attribute unavailable" }
-            // AppActivity compares the inflated theme's name to store settings.
-            // Keep the name captured at inflation, so a change triggers exactly
-            // one recreation instead of continually comparing 'dark' to 'ash'.
-            patcher.patch(AppCompatActivity::class.java.getDeclaredMethod("setTheme", Int::class.javaPrimitiveType), Hook {
-                val activity = it.thisObject as? AppActivity ?: return@Hook
-                synchronized(themeNames) { themeNames[activity.theme] = selected.native }
+            // Own palette refreshes instead of relying on synthetic native theme names.
+            patcher.patch(AppActivity::class.java.getDeclaredMethod("onCreate", android.os.Bundle::class.java), PreHook {
+                activityThemes[it.thisObject as AppActivity] = selected
             })
+            patcher.patch(AppActivity::class.java.getDeclaredMethod("onResume"), PreHook {
+                refreshActivity(it.thisObject as AppActivity)
+            })
+            activityThemes[Utils.appActivity] = selected
             patcher.patch(Resources.Theme::class.java.getDeclaredMethod(
                 "resolveAttribute", Int::class.javaPrimitiveType, TypedValue::class.java, Boolean::class.javaPrimitiveType,
             ), Hook {
                 if (it.result == true && it.args[0] == themeName) {
-                    synchronized(themeNames) { themeNames[it.thisObject] }?.let { name ->
+                    comparingTheme.get()?.let { name ->
                         (it.args[1] as TypedValue).string = name
                     }
                 }
@@ -59,10 +62,24 @@ class NewThemes : Plugin() {
             val callback = WidgetSettingsAppearance::class.java.classLoader!!.loadClass(
                 "com.discord.widgets.settings.WidgetSettingsAppearance\$onViewBoundOrOnResume\$1",
             )
-            patcher.patch(callback.getDeclaredMethod("invoke", Any::class.java), Hook {
-                val widget = (it.thisObject as DiscordCallableReference).boundReceiver as WidgetSettingsAppearance
-                bind(widget, it.args[0] as WidgetSettingsAppearance.Model)
+            // Native configureUI replaces listeners after every store emission.
+            // Hook the actual target, including callers that ART has inlined.
+            callback.declaredMethods.filter { it.name == "invoke" }.forEach(XposedBridge::deoptimizeMethod)
+            XposedBridge.deoptimizeMethod(WidgetSettingsAppearance::class.java.getDeclaredMethod(
+                "access\$configureUI", WidgetSettingsAppearance::class.java, WidgetSettingsAppearance.Model::class.java,
+            ))
+            patcher.patch(WidgetSettingsAppearance::class.java.getDeclaredMethod(
+                "configureUI", WidgetSettingsAppearance.Model::class.java,
+            ), Hook {
+                bind(it.thisObject as WidgetSettingsAppearance, it.args[0] as WidgetSettingsAppearance.Model)
             })
+            val activitySettingsCallback = AppActivity::class.java.classLoader!!.loadClass("com.discord.app.AppActivity\$c")
+            activitySettingsCallback.declaredMethods.filter { it.name == "invoke" }.forEach(XposedBridge::deoptimizeMethod)
+            val compareSettings = activitySettingsCallback.getDeclaredMethod("invoke", Any::class.java)
+            patcher.patch(compareSettings, PreHook {
+                comparingTheme.set((it.args[0] as StoreUserSettingsSystem.Settings).theme)
+            })
+            patcher.patch(compareSettings, Hook { comparingTheme.remove() })
             patcher.patch(WidgetSettingsAppearance::class.java.getDeclaredMethod("onViewBoundOrOnResume"), Hook {
                 bind(it.thisObject as WidgetSettingsAppearance, null)
                 bridge.refresh()
@@ -94,8 +111,6 @@ class NewThemes : Plugin() {
                 bridge.refresh()
             })
             bridge.start()
-            // Use a distinct native string for each choice so Discord's settings
-            // observable recreates activities even between two dark palettes.
             applyTheme(selected)
         } catch (error: Throwable) {
             bridge.close()
@@ -103,8 +118,21 @@ class NewThemes : Plugin() {
             patcher.unpatchAll()
             palette?.clearCaches()
             palette = null
-            themeNames.clear()
+            running = false
+            activityThemes.clear()
+            comparingTheme.remove()
             throw error
+        }
+    }
+
+    private fun refreshActivity(activity: AppActivity) {
+        if (!running || activity.isFinishing || activity.isDestroyed) return
+        val rendered = activityThemes[activity] ?: selected.also { activityThemes[activity] = it }
+        if (rendered == selected || activity.intent?.hasExtra("AC_FRAGMENT_ID") == true) return
+        // Mark before posting to coalesce store emissions and onResume callbacks.
+        activityThemes[activity] = selected
+        activity.window.decorView.post {
+            if (running && !activity.isFinishing && !activity.isDestroyed) activity.recreate()
         }
     }
 
@@ -121,6 +149,7 @@ class NewThemes : Plugin() {
         pages.values.forEach { page ->
             page.radios.forEachIndexed { index, radio -> radio.g(ThemeChoice.values()[index] == theme, false) }
         }
+        refreshActivity(Utils.appActivity)
     }
 
     private fun bind(widget: WidgetSettingsAppearance, model: WidgetSettingsAppearance.Model?) {
@@ -160,12 +189,14 @@ class NewThemes : Plugin() {
     }
 
     override fun stop(context: Context) {
+        running = false
         sync?.close()
         sync = null
         patcher.unpatchAll()
         palette?.clearCaches()
         palette = null
-        themeNames.clear()
+        activityThemes.clear()
+        comparingTheme.remove()
         pages.forEach { (widget, page) ->
             page.radios.forEach { it.setOnCheckedListener(null) }
             listOf(page.radios[1], page.radios[3]).forEach { (it.parent as? ViewGroup)?.removeView(it) }
