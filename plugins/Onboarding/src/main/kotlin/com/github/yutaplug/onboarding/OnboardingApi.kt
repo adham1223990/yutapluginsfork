@@ -43,6 +43,8 @@ internal data class BrowseChannel(
     val type: Int,
     val parentId: Long,
     val position: Int,
+    val topic: String = "",
+    val lastMessageId: Long? = null,
 )
 
 internal class OnboardingApi(private val expectedToken: String) {
@@ -147,6 +149,8 @@ internal class OnboardingApi(private val expectedToken: String) {
                 type,
                 channel.optString("parent_id").toSnowflakeOrNull() ?: 0L,
                 channel.optInt("position", 0),
+                channel.optString("topic").takeUnless { it == "null" }.orEmpty(),
+                channel.optString("last_message_id").toSnowflakeOrNull(),
             )
         }
         return result.sortedWith(compareBy(BrowseChannel::position, BrowseChannel::name))

@@ -9,6 +9,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.view.Window
@@ -17,6 +18,19 @@ import android.widget.CheckBox
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.EditText
+import android.widget.ImageView
+import android.widget.CompoundButton
+import android.content.Context
+import android.text.Editable
+import android.text.TextWatcher
+import android.text.TextUtils
+import android.text.format.DateUtils
+import androidx.appcompat.widget.Toolbar
+import androidx.core.widget.NestedScrollView
+import com.discord.views.SearchInputView
+import com.google.android.material.tabs.TabLayout
+import com.google.android.material.button.MaterialButton
 import com.aliucord.Utils
 import com.discord.stores.StoreStream
 import com.discord.models.domain.emoji.ModelEmojiCustom
@@ -47,7 +61,7 @@ internal class OnboardingScreen(
     private val secondary = color("colorBackgroundSecondary", 0xff2b2d31.toInt())
     private val normal = color("colorTextNormal", 0xfff2f3f5.toInt())
     private val muted = color("colorTextMuted", 0xffb5bac1.toInt())
-    private val brand = color("colorBrand", 0xff5865f2.toInt())
+    private val brand = color("color_brand", 0xff5865f2.toInt())
     private val guildName = StoreStream.getGuilds().getGuild(guildId)?.name ?: "Server"
     private var config: OnboardingConfig? = null
     private var saved: Set<String> = emptySet()
@@ -58,15 +72,17 @@ internal class OnboardingScreen(
     private var initial = firstRun
     private var personalized = personalized
     private var promptIndex = 0
-    private var expandedCategoryId: Long? = null
+    private var searchQuery = ""
     private var loading = true
     private var browseError: String? = null
     private var saving = false
     private var closed = false
     private var generation = 0
-    private lateinit var title: TextView
-    private lateinit var tabs: LinearLayout
-    private lateinit var scroll: ScrollView
+    private lateinit var toolbar: Toolbar
+    private lateinit var tabs: TabLayout
+    private lateinit var search: SearchInputView
+    private var searchWatcher: TextWatcher? = null
+    private lateinit var scroll: NestedScrollView
     private lateinit var content: LinearLayout
     private lateinit var footer: LinearLayout
 
@@ -78,6 +94,9 @@ internal class OnboardingScreen(
             generation++
             worker.shutdownNow()
             main.removeCallbacksAndMessages(null)
+            searchWatcher?.let { (search.editText as? EditText)?.removeTextChangedListener(it) }
+            searchWatcher = null
+            tabs.clearOnTabSelectedListeners()
             onClosed()
         }
         dialog.setOnKeyListener { _, keyCode, event ->
@@ -93,8 +112,8 @@ internal class OnboardingScreen(
         dialog.window?.apply {
             setBackgroundDrawable(ColorDrawable(primary))
             setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-            statusBarColor = primary
-            navigationBarColor = primary
+            statusBarColor = color("colorBackgroundTertiary", secondary)
+            navigationBarColor = color("colorBackgroundTertiary", secondary)
         }
         load()
     }
@@ -106,37 +125,64 @@ internal class OnboardingScreen(
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(primary)
         }
-        val header = LinearLayout(activity).apply {
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(16), dp(8), dp(8), 0)
-            setBackgroundColor(secondary)
+        // Reuse the toolbar and tab XML from 126.21's native thread browser.
+        val nativePage = LayoutInflater.from(activity).inflate(
+            Utils.getResId("widget_thread_browser", "layout"), null, false,
+        )
+        toolbar = nativePage.findViewById(Utils.getResId("action_bar_toolbar", "id"))
+        (toolbar.parent as ViewGroup).removeView(toolbar)
+        toolbar.title = "Channels & Roles"
+        val backIcon = Utils.getResId("ic_arrow_back_white_24dp", "drawable")
+        if (backIcon != 0) {
+            toolbar.setNavigationIcon(backIcon)
+            toolbar.navigationIcon?.setTint(color("colorInteractiveNormal", muted))
         }
-        title = TextView(activity).apply {
-            textSize = 18f
-            gravity = Gravity.CENTER_VERTICAL
-            setTextColor(normal)
-            text = "Channels & Roles"
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
+        toolbar.navigationContentDescription = "Back"
+        toolbar.setNavigationOnClickListener {
+            if (initial && promptIndex > 0) {
+                promptIndex--
+                render()
+            } else closeWithConfirmation()
         }
-        header.addView(title, LinearLayout.LayoutParams(0, dp(48), 1f).apply { gravity = Gravity.CENTER_VERTICAL })
-        header.addView(TextView(activity).apply {
-            text = "✕"
-            textSize = 20f
-            gravity = Gravity.CENTER
-            setTextColor(muted)
-            contentDescription = "Close"
-            isClickable = true
-            isFocusable = true
-            setOnClickListener { closeWithConfirmation() }
-        }, LinearLayout.LayoutParams(dp(48), dp(48)))
-        page.addView(header)
-
-        tabs = LinearLayout(activity).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(secondary)
+        page.addView(toolbar)
+        tabs = nativePage.findViewById(Utils.getResId("action_bar_tabs", "id"))
+        (tabs.parent as ViewGroup).removeView(tabs)
+        tabs.addTab(tabs.newTab().setText("Customize"))
+        tabs.addTab(tabs.newTab().setText("Browse Channels"))
+        tabs.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
+            override fun onTabSelected(selectedTab: TabLayout.Tab) {
+                val next = if (selectedTab.position == 0) Tab.CUSTOMIZE else Tab.BROWSE
+                if (tab == next) return
+                tab = next
+                render()
+                scroll.scrollTo(0, 0)
+            }
+            override fun onTabUnselected(tab: TabLayout.Tab) {}
+            override fun onTabReselected(tab: TabLayout.Tab) {}
+        })
+        page.addView(tabs)
+        search = SearchInputView(activity, null).apply { setHint("Search") }
+        page.addView(search, LinearLayout.LayoutParams(-1, -2).apply {
+            setMargins(dp(16), dp(14), dp(16), dp(14))
+        })
+        searchWatcher = object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                searchQuery = s?.toString().orEmpty()
+                search.b(searchQuery)
+                config?.let {
+                    if (tab == Tab.BROWSE && !loading) {
+                        content.removeAllViews()
+                        renderBrowse(it)
+                        scroll.scrollTo(0, 0)
+                    }
+                }
+            }
         }
-        page.addView(tabs, LinearLayout.LayoutParams(-1, dp(48)))
-        scroll = ScrollView(activity).apply { isFillViewport = true }
+        (search.editText as? EditText)?.addTextChangedListener(searchWatcher)
+        search.onClearClicked = { search.setText("") }
+        scroll = NestedScrollView(activity).apply { isFillViewport = true }
         content = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(16), dp(16), dp(24))
@@ -193,11 +239,11 @@ internal class OnboardingScreen(
         if (!::content.isInitialized) return
         content.removeAllViews()
         footer.removeAllViews()
-        tabs.removeAllViews()
+        search.visibility = if (!initial && !loading && tab == Tab.BROWSE) View.VISIBLE else View.GONE
         footer.visibility = if (initial || tab == Tab.CUSTOMIZE) View.VISIBLE else View.GONE
         val data = config
         if (loading) {
-            title.text = "Channels & Roles"
+            toolbar.title = "Channels & Roles"
             tabs.visibility = View.GONE
             content.addView(ProgressBar(activity), LinearLayout.LayoutParams(dp(36), dp(36)).apply {
                 gravity = Gravity.CENTER_HORIZONTAL
@@ -210,10 +256,10 @@ internal class OnboardingScreen(
             renderInitial(data)
             return
         }
-        title.text = "Channels & Roles"
+        toolbar.title = "Channels & Roles"
         tabs.visibility = View.VISIBLE
-        tabButton("Customize", Tab.CUSTOMIZE)
-        tabButton("Browse Channels", Tab.BROWSE)
+        tabs.getTabAt(if (tab == Tab.CUSTOMIZE) 0 else 1)?.select()
+        toolbar.title = if (tab == Tab.BROWSE) "Browse Channels" else "Channels & Roles"
         when (tab) {
             Tab.CUSTOMIZE -> renderCustomize(data)
             Tab.BROWSE -> renderBrowse(data)
@@ -229,7 +275,7 @@ internal class OnboardingScreen(
             return
         }
         promptIndex = promptIndex.coerceIn(0, prompts.lastIndex)
-        title.text = "Welcome to $guildName"
+        toolbar.title = "Welcome to $guildName"
         label("QUESTION ${promptIndex + 1} OF ${prompts.size}", 12f, brand)
         renderPrompt(prompts[promptIndex])
         if (promptIndex > 0) {
@@ -272,7 +318,7 @@ internal class OnboardingScreen(
             return
         }
         prompt.options.forEach { option ->
-            val setting = Utils.createCheckedSetting(
+            val setting = createSetting(
                 activity,
                 if (prompt.singleSelect) CheckedSetting.ViewType.RADIO else CheckedSetting.ViewType.CHECK,
                 option.title,
@@ -349,7 +395,7 @@ internal class OnboardingScreen(
         }
         var picker: AlertDialog? = null
         prompt.options.forEachIndexed { index, option ->
-            val setting = Utils.createCheckedSetting(
+            val setting = createSetting(
                 activity,
                 if (prompt.singleSelect) CheckedSetting.ViewType.RADIO else CheckedSetting.ViewType.CHECK,
                 option.title,
@@ -397,20 +443,20 @@ internal class OnboardingScreen(
     }
 
     private fun renderBrowse(data: OnboardingConfig) {
-        label("Browse Channels", 18f, normal)
-        label("Choose which channels appear in your server list.", 13f, muted)
-        content.addView(Utils.createCheckedSetting(
-            activity,
-            CheckedSetting.ViewType.SWITCH,
-            "Show all channels",
-            "Turn off to show your selected channels. Default channels start selected.",
-        ).apply {
-            isChecked = !personalized
-            setOnCheckedListener { showAll ->
-                personalized = !showAll
-                onPersonalizedChanged(personalized)
-            }
-        }, LinearLayout.LayoutParams(-1, -2))
+        if (searchQuery.isBlank()) {
+            content.addView(createSetting(
+                activity,
+                CheckedSetting.ViewType.SWITCH,
+                "Show all channels",
+                "Turn off to show only the channels you follow.",
+            ).apply {
+                isChecked = !personalized
+                setOnCheckedListener { showAll ->
+                    personalized = !showAll
+                    onPersonalizedChanged(personalized)
+                }
+            }, LinearLayout.LayoutParams(-1, -2))
+        }
         browseError?.let { error ->
             label(error, 13f, muted)
             content.addView(actionButton("Retry loading channels", false) { loadChannels() },
@@ -419,46 +465,56 @@ internal class OnboardingScreen(
         }
         val categories = channels.filter { it.type == 4 }.associateBy(BrowseChannel::id)
         val groups = channels.filter { it.type != 4 }.groupBy(BrowseChannel::parentId)
-        if (groups.isEmpty() && categories.isEmpty()) {
-            label("No channels available to browse.", 14f, muted, top = 24)
-            return
-        }
-        val groupIds = (groups.keys + categories.keys)
-            .sortedWith(compareBy({ categories[it]?.position ?: Int.MIN_VALUE }, { categories[it]?.name.orEmpty() }))
+        val groupIds = groups.keys.sortedWith(compareBy(
+            { categories[it]?.position ?: Int.MIN_VALUE }, { categories[it]?.name.orEmpty() },
+        ))
+        var visibleGroups = 0
         groupIds.forEach { categoryId ->
             val members = groups[categoryId].orEmpty().sortedWith(compareBy(BrowseChannel::position, BrowseChannel::name))
             val heading = categories[categoryId]?.name ?: "Other Channels"
-            val expanded = expandedCategoryId == categoryId
+            val visible = members.filter {
+                searchQuery.isBlank() || heading.contains(searchQuery, true) ||
+                    it.name.contains(searchQuery, true) || it.topic.contains(searchQuery, true)
+            }
+            if (visible.isEmpty()) return@forEach
+            visibleGroups++
             val row = LinearLayout(activity).apply { gravity = Gravity.CENTER_VERTICAL }
-            row.addView(TextView(activity).apply {
-                text = (if (expanded) "▾  " else "▸  ") + heading + "  (${members.size})"
-                textSize = 15f
-                setTextColor(normal)
-                setPadding(dp(8), dp(15), dp(8), dp(15))
-                isClickable = true
-                isFocusable = true
-                setOnClickListener {
-                    expandedCategoryId = if (expanded) null else categoryId
-                    render()
-                }
+            row.addView(styledText("UiKit_TextView_Semibold").apply {
+                text = heading
+                setTextColor(color("colorHeaderSecondary", muted))
             }, LinearLayout.LayoutParams(0, -2, 1f))
-            val allSelected = if (members.isEmpty()) {
-                categoryId != 0L && isChannelSelected(data, categoryId)
-            } else members.all { isChannelSelected(data, it.id) }
-            row.addView(CheckBox(activity).apply {
-                isChecked = allSelected
-                isEnabled = categoryId != 0L || members.isNotEmpty()
-                buttonTintList = ColorStateList.valueOf(brand)
-                contentDescription = "Show $heading"
+            // Following a category applies to every child, including filtered search results.
+            row.addView(com.google.android.material.checkbox.MaterialCheckBox(activity).apply {
+                isChecked = members.all { isChannelSelected(data, it.id) }
+                text = "Follow Category"
+                val appearance = Utils.getResId("App_TabLayout_Text", "style")
+                if (appearance != 0) setTextAppearance(activity, appearance)
+                setTextColor(muted)
+                buttonTintList = compoundTint()
+                contentDescription = "Follow category $heading"
                 setOnCheckedChangeListener { _, enabled ->
                     updateCategory(categoryId, members, enabled, this)
                 }
-            }, LinearLayout.LayoutParams(dp(48), dp(48)))
-            content.addView(row, LinearLayout.LayoutParams(-1, -2))
-            if (expanded) members.forEach { channel -> renderChannel(data, channel) }
+            }, LinearLayout.LayoutParams(-2, dp(48)))
+            content.addView(row, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(16) })
+            val group = LinearLayout(activity).apply {
+                orientation = LinearLayout.VERTICAL
+                val backgroundId = Utils.getResId("drawable_rect_rounded_bg_secondary", "drawable")
+                if (backgroundId != 0) setBackgroundResource(backgroundId) else setBackgroundColor(secondary)
+            }
+            visible.forEachIndexed { index, channel ->
+                if (index > 0) group.addView(View(activity).apply {
+                    setBackgroundColor(color("colorBackgroundModifierAccent", secondary))
+                }, LinearLayout.LayoutParams(-1, dp(1)).apply { marginStart = dp(56) })
+                renderChannel(data, channel, group)
+            }
+            content.addView(group, LinearLayout.LayoutParams(-1, -2))
+        }
+        if (visibleGroups == 0) {
+            label(if (searchQuery.isBlank()) "No channels available to browse." else "No channels match your search.",
+                14f, muted, top = 24)
         }
     }
-
     private fun isChannelSelected(data: OnboardingConfig, channelId: Long): Boolean {
         if (isChannelHidden(channelId)) return false
         val addedByOnboarding = channelId in data.defaultChannelIds || data.prompts.any { prompt ->
@@ -493,30 +549,55 @@ internal class OnboardingScreen(
                     render()
                     scroll.post { scroll.scrollTo(0, y) }
                 }.onFailure { error ->
-                    checkBox.setOnCheckedChangeListener(null)
-                    checkBox.isChecked = !enabled
-                    checkBox.isEnabled = true
+                    val y = scroll.scrollY
+                    render()
+                    scroll.post { scroll.scrollTo(0, y) }
                     Utils.showToast(error.message ?: "Could not update category")
                 }
             }
         }
     }
 
-    private fun renderChannel(data: OnboardingConfig, channel: BrowseChannel) {
+    private fun renderChannel(data: OnboardingConfig, channel: BrowseChannel, parent: LinearLayout) {
         val isDefault = channel.id in data.defaultChannelIds
         val assignedByPrompt = data.prompts.any { prompt ->
             prompt.options.any { it.id in selected && channel.id in it.channelIds }
         }
-        val setting = Utils.createCheckedSetting(
+        val setting = createSetting(
             activity,
             CheckedSetting.ViewType.CHECK,
-            (if (channel.type == 2 || channel.type == 13) "Voice: " else "# ") + channel.name,
+            channel.name,
             when {
+                channel.topic.hasVisibleText() -> channel.topic
+                channel.lastMessageId != null -> "Active " + DateUtils.getRelativeTimeSpanString(
+                    (channel.lastMessageId shr 22) + 1420070400000L,
+                    System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS,
+                )
                 isDefault -> "Default channel"
                 assignedByPrompt -> "Added by a customization answer"
                 else -> ""
             },
         )
+        val iconId = Utils.getResId(when (channel.type) {
+            2, 13 -> "ic_channel_voice_16dp"
+            5 -> "ic_channel_announcements"
+            15 -> "ic_channel_forum_post"
+            else -> "ic_channel_text_16dp"
+        }, "drawable")
+        if (iconId != 0) setting.findViewById<ImageView>(Utils.getResId("setting_drawable_left", "id"))?.apply {
+            visibility = View.VISIBLE
+            setImageResource(iconId)
+            imageTintList = ColorStateList.valueOf(muted)
+            layoutParams = layoutParams.apply { width = dp(24); height = dp(24) }
+        }
+        setting.findViewById<TextView>(Utils.getResId("setting_label", "id"))?.apply {
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+        }
+        setting.findViewById<TextView>(Utils.getResId("setting_subtext", "id"))?.apply {
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+        }
         setting.isChecked = isChannelSelected(data, channel.id)
         var updating = false
         setting.setOnCheckedListener { enabled ->
@@ -549,24 +630,7 @@ internal class OnboardingScreen(
                 }
             }
         }
-        content.addView(setting, LinearLayout.LayoutParams(-1, -2))
-    }
-
-    private fun tabButton(text: String, value: Tab) {
-        tabs.addView(TextView(activity).apply {
-            this.text = text
-            gravity = Gravity.CENTER
-            textSize = 14f
-            setTextColor(if (tab == value) normal else muted)
-            setBackgroundColor(if (tab == value) primary else secondary)
-            isClickable = true
-            isFocusable = true
-            setOnClickListener {
-                tab = value
-                render()
-                scroll.scrollTo(0, 0)
-            }
-        }, LinearLayout.LayoutParams(0, -1, 1f))
+        parent.addView(setting, LinearLayout.LayoutParams(-1, -2))
     }
 
     private fun save(isInitial: Boolean) {
@@ -685,28 +749,56 @@ internal class OnboardingScreen(
     }
 
     private fun label(text: String, size: Float, color: Int, top: Int = 8) {
-        content.addView(TextView(activity).apply {
+        content.addView(styledText(if (size >= 18f) "UiKit_TextView_H2" else "UiKit_TextView").apply {
             this.text = text
-            textSize = size
             setTextColor(color)
             setPadding(0, dp(top), 0, dp(8))
         })
     }
 
-    private fun actionButton(text: String, primaryAction: Boolean, onClick: () -> Unit): TextView =
-        TextView(activity).apply {
+    private fun actionButton(text: String, primaryAction: Boolean, onClick: () -> Unit): TextView {
+        val nativeDialog = LayoutInflater.from(activity).inflate(
+            Utils.getResId("widget_notice_dialog", "layout"), null, false,
+        )
+        val button = nativeDialog.findViewById<MaterialButton>(Utils.getResId(
+            if (primaryAction) "OK_BUTTON" else "CANCEL_BUTTON", "id",
+        ))
+        (button.parent as ViewGroup).removeView(button)
+        return button.apply {
             this.text = text
-            textSize = 14f
-            gravity = Gravity.CENTER
-            setTextColor(normal)
-            background = android.graphics.drawable.GradientDrawable().apply {
-                cornerRadius = dp(4).toFloat()
-                setColor(if (primaryAction) brand else primary)
-            }
-            isClickable = true
-            isFocusable = true
             isEnabled = !saving
             setOnClickListener { onClick() }
+        }
+    }
+
+    private fun styledText(style: String) = TextView(activity, null, 0, Utils.getResId(style, "style"))
+
+    private fun compoundTint() = ColorStateList(
+        arrayOf(
+            intArrayOf(-android.R.attr.state_enabled),
+            intArrayOf(android.R.attr.state_checked),
+            intArrayOf(),
+        ),
+        intArrayOf(color("colorInteractiveMuted", muted), brand, color("colorInteractiveNormal", muted)),
+    )
+
+    private fun createSetting(context: Context, type: CheckedSetting.ViewType, text: String, subtext: String): CheckedSetting =
+        Utils.createCheckedSetting(context, type, text, subtext).apply {
+            // Utils creates the native layout; apply the text appearance used by 126.21 settings.
+            val appearance = Utils.getResId("UiKit_TextAppearance", "style")
+            findViewById<TextView>(Utils.getResId("setting_label", "id"))?.apply {
+                if (appearance != 0) setTextAppearance(context, appearance)
+                val size = Utils.getResId("uikit_textsize_large", "dimen")
+                if (size != 0) setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, resources.getDimension(size))
+                setTextColor(normal)
+            }
+            findViewById<TextView>(Utils.getResId("setting_subtext", "id"))?.apply {
+                if (appearance != 0) setTextAppearance(context, appearance)
+                setTextColor(muted)
+            }
+            if (type == CheckedSetting.ViewType.CHECK) {
+                findViewById<CompoundButton>(Utils.getResId("setting_button", "id"))?.buttonTintList = compoundTint()
+            }
         }
 
     private fun color(name: String, fallback: Int): Int {
