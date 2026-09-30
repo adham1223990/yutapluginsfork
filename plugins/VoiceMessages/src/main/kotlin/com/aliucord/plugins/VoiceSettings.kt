@@ -2,64 +2,56 @@ package com.aliucord.plugins
 
 import android.content.Context
 import android.graphics.Color
-import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.graphics.Typeface
 import android.os.Build
-import android.os.Bundle
 import android.text.Editable
 import android.text.InputFilter
 import android.text.InputType
 import android.text.TextWatcher
 import android.view.Gravity
-import android.view.View
-import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
-import android.widget.EditText
-import android.widget.ImageView
+import android.view.View
+import android.view.WindowManager
 import android.widget.LinearLayout
-import android.widget.RadioButton
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import androidx.core.content.ContextCompat
-import com.aliucord.Utils
 import com.aliucord.api.SettingsAPI
-import com.aliucord.widgets.BottomSheet
+import com.aliucord.fragments.SettingsPage
+import com.aliucord.Utils
 import com.discord.views.CheckedSetting
 import java.util.Locale
 
-class VoiceSettings(
-    private val settings: SettingsAPI,
-) : BottomSheet() {
-    // FragmentManager recreates sheets through their public empty constructor.
+class VoiceSettings(private val settings: SettingsAPI) : SettingsPage() {
+    // FragmentManager recreates pages through their public empty constructor.
     constructor() : this(SettingsAPI("VoiceMessages"))
 
-    private var previewButton: ImageView? = null
-    private var previewCaption: TextView? = null
     private var backgroundRow: View? = null
+    private var microphoneRow: View? = null
     private var colorDialog: AlertDialog? = null
 
-    override fun onViewCreated(
-        view: View,
-        savedInstanceState: Bundle?,
-    ) {
-        super.onViewCreated(view, savedInstanceState)
-        linearLayout.setPadding(dp(16), dp(8), dp(16), dp(24))
-        linearLayout.addView(
-            text("Voice messages", 22f, primary()).apply {
-                setTypeface(Typeface.DEFAULT, Typeface.BOLD)
-            },
-        )
+    override fun onViewBound(view: View) {
+        super.onViewBound(view)
+        setActionBarTitle("Voice messages")
+        setActionBarSubtitle("Plugin settings")
+        linearLayout.setPadding(0, dp(16), 0, dp(24))
+        linearLayout.setBackgroundColor(themeColor(requireContext(), "colorBackgroundPrimary", Color.DKGRAY))
         linearLayout.addView(
             text("Make the microphone your own.", 14f, muted()).apply {
-                setPadding(0, dp(4), 0, dp(16))
+                setPadding(dp(16), 0, dp(16), dp(16))
             },
         )
-        addPreview()
 
         val recording = section("Recording", "Choose how you start a voice message.")
-        toggle(recording, "disableSelectionPopup", "Hold to record", "Skip the menu. Release to send, or slide away to cancel.")
+        toggle(
+            recording,
+            "disableSelectionPopup",
+            "Hold to record",
+            "Skip the menu. Release to send, or slide away to cancel.",
+        )
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             divider(recording)
             toggle(recording, "legacyOgg", "Try Ogg / Opus", "Experimental on Android 7–9. Uses M4A when unavailable.")
@@ -68,91 +60,61 @@ class VoiceSettings(
         val quality = section("Audio quality", "Applies to new microphone recordings.")
         qualityOptions(quality)
 
-        val appearance = section("Appearance", "Your changes appear in the preview above.")
-        toggle(appearance, "integratedButton", "Place inside the chatbox", "Use a microphone icon without a circular background.")
+        val appearance = section("Appearance", "Customize the microphone button in the message composer.")
+        toggle(
+            appearance,
+            "integratedButton",
+            "Place inside the chatbox",
+            "Match the emoji button with a grey microphone and no circular background.",
+        )
         divider(appearance)
-        backgroundRow = colorSetting(appearance, "buttonColor", "Button color", "Circular background", VoiceMessages.DEFAULT_BUTTON_COLOR)
+        backgroundRow =
+            colorSetting(
+                appearance,
+                "buttonColor",
+                "Button color",
+                "Circular background",
+                VoiceMessages.DEFAULT_BUTTON_COLOR,
+            )
         divider(appearance)
-        colorSetting(appearance, "buttonIconColor", "Microphone color", "Icon when you are not recording", VoiceMessages.DEFAULT_ICON_COLOR)
+        microphoneRow = colorSetting(
+            appearance,
+            "buttonIconColor",
+            "Microphone color",
+            "Icon when you are not recording",
+            VoiceMessages.DEFAULT_ICON_COLOR,
+        )
         divider(appearance)
-        toggle(appearance, "translucentButton", "Soft opacity", "Make the microphone and its background semi-transparent.")
-        updatePreview()
+        toggle(
+            appearance,
+            "translucentButton",
+            "Soft opacity",
+            "Make the microphone and its background semi-transparent.",
+        )
+        updateColorAvailability()
     }
 
-    private fun addPreview() {
-        val card = card().apply { setPadding(dp(16), dp(16), dp(16), dp(12)) }
-        val composer =
-            LinearLayout(requireContext()).apply {
-                gravity = Gravity.CENTER_VERTICAL
-                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-            }
-        composer.addView(text("+", 26f, muted()), LinearLayout.LayoutParams(dp(32), dp(44)))
-        val message =
-            text("Message", 15f, muted()).apply {
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(12), 0, dp(12), 0)
-                background = rounded(themeColor(context, "colorBackgroundTertiary", Color.DKGRAY), 12)
-            }
-        composer.addView(message, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(10) })
-        previewButton =
-            ImageView(requireContext()).apply {
-                setPadding(dp(8), dp(8), dp(8), dp(8))
-                setImageDrawable(ContextCompat.getDrawable(context, com.lytefast.flexinput.R.e.ic_mic_grey_24dp)?.mutate())
-            }
-        composer.addView(previewButton, LinearLayout.LayoutParams(dp(40), dp(40)))
-        card.addView(composer)
-        previewCaption = text("", 12f, muted()).apply { setPadding(0, dp(10), 0, 0) }
-        card.addView(previewCaption)
-        linearLayout.addView(card, LinearLayout.LayoutParams(-1, -2))
-    }
-
-    private fun updatePreview() {
+    private fun updateColorAvailability() {
         val integrated = settings.getBool("integratedButton", false)
-        val alpha = if (settings.getBool("translucentButton", false)) 160 else 255
-        previewButton?.apply {
-            val color = savedColor("buttonColor", VoiceMessages.DEFAULT_BUTTON_COLOR)
-            background =
-                if (integrated) {
-                    null
-                } else {
-                    GradientDrawable().apply {
-                        shape = GradientDrawable.OVAL
-                        setColor(Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color)))
-                    }
-                }
-            drawable?.setTint(savedColor("buttonIconColor", VoiceMessages.DEFAULT_ICON_COLOR))
-            drawable?.alpha = alpha
+        listOf(backgroundRow, microphoneRow).forEach { row ->
+            row?.isEnabled = !integrated
+            row?.alpha = if (integrated) 0.5f else 1f
         }
-        previewCaption?.text =
-            if (settings.getBool("disableSelectionPopup", false)) {
-                "Hold to record · release to send"
-            } else {
-                "Tap to choose a recording or audio file"
-            }
-        backgroundRow?.alpha = if (integrated) 0.5f else 1f
-        backgroundRow?.isEnabled = !integrated
-        backgroundRow?.contentDescription = if (integrated) "Button color: available with a circular background" else null
     }
 
-    private fun section(
-        title: String,
-        description: String,
-    ): LinearLayout {
+    private fun section(title: String, description: String): LinearLayout {
+        linearLayout.addView(DiscordSettingsUi.divider(requireContext()), LinearLayout.LayoutParams(-1, dp(1)))
+        linearLayout.addView(DiscordSettingsUi.header(requireContext(), title))
         linearLayout.addView(
-            text(title, 16f, primary()).apply {
-                setTypeface(Typeface.DEFAULT, Typeface.BOLD)
-                setPadding(dp(4), dp(24), 0, dp(4))
+            text(description, 14f, muted()).apply {
+                setPadding(dp(16), 0, dp(16), dp(8))
             },
         )
-        linearLayout.addView(text(description, 13f, muted()).apply { setPadding(dp(4), 0, 0, dp(10)) })
-        return card().also { linearLayout.addView(it, LinearLayout.LayoutParams(-1, -2)) }
-    }
-
-    private fun card() =
-        LinearLayout(requireContext()).apply {
+        return LinearLayout(requireContext()).apply {
             orientation = LinearLayout.VERTICAL
-            background = rounded(themeColor(context, "colorBackgroundSecondary", Color.rgb(47, 49, 54)), 14)
+            linearLayout.addView(this, LinearLayout.LayoutParams(-1, -2))
         }
+    }
 
     private fun toggle(
         parent: LinearLayout,
@@ -171,7 +133,7 @@ class VoiceSettings(
                     } else if (key == "translucentButton") {
                         VoiceMessages.instance?.refreshAppearance()
                     }
-                    updatePreview()
+                    updateColorAvailability()
                 }
             },
             LinearLayout.LayoutParams(-1, -2),
@@ -180,46 +142,27 @@ class VoiceSettings(
 
     private fun qualityOptions(parent: LinearLayout) {
         val selected = settings.getInt("audioQuality", 128).takeIf { it in listOf(64, 128, 192) } ?: 128
-        val radios = mutableListOf<Pair<RadioButton, Int>>()
-        val choices =
-            listOf(
-                Triple("High", "More detail · larger files", 192),
-                Triple("Balanced", "Recommended for everyday voice messages", 128),
-                Triple("Compact", "Smaller files · lower audio quality", 64),
-            )
-        choices.forEachIndexed { index, (name, description, value) ->
-            if (index > 0) divider(parent)
-            val row = row()
-            val column =
-                LinearLayout(requireContext()).apply {
-                    orientation = LinearLayout.VERTICAL
-                    addView(text(name, 16f, primary()))
-                    addView(text(description, 12f, muted()).apply { setPadding(0, dp(4), dp(8), 0) })
-                }
-            row.addView(column, LinearLayout.LayoutParams(0, -2, 1f))
-            row.addView(text("$value kbps", 12f, muted()).apply { setPadding(dp(8), 0, dp(8), 0) })
-            val radio =
-                RadioButton(requireContext()).apply {
-                    isChecked = selected == value
-                    isClickable = false
-                    isFocusable = false
-                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-                    buttonTintList =
-                        android.content.res.ColorStateList
-                            .valueOf(themeColor(context, "colorBrand", VoiceMessages.DEFAULT_BUTTON_COLOR))
-                }
-            radios.add(radio to value)
-            row.addView(radio, LinearLayout.LayoutParams(dp(32), dp(40)))
-            row.contentDescription = "$name, $value kilobits per second. $description"
-            row.isSelected = selected == value
-            row.setOnClickListener {
-                settings.setInt("audioQuality", value)
-                radios.forEach { (button, quality) ->
-                    button.isChecked = quality == value
-                    (button.parent as View).isSelected = quality == value
+        val options = mutableListOf<Pair<CheckedSetting, Int>>()
+        var updating = false
+        val choices = listOf(
+            Triple("High", "192 kbps · More detail and larger files", 192),
+            Triple("Balanced", "128 kbps · Recommended for everyday voice messages", 128),
+            Triple("Compact", "64 kbps · Smaller files and lower audio quality", 64),
+        )
+        choices.forEach { (name, description, value) ->
+            val option = Utils.createCheckedSetting(requireContext(), CheckedSetting.ViewType.RADIO, name, description)
+            option.isChecked = selected == value
+            option.setOnCheckedListener { checked ->
+                if (!updating) {
+                    updating = true
+                    if (checked) settings.setInt("audioQuality", value)
+                    val quality = settings.getInt("audioQuality", 128)
+                    options.forEach { (button, bitrate) -> button.isChecked = bitrate == quality }
+                    updating = false
                 }
             }
-            parent.addView(row, LinearLayout.LayoutParams(-1, -2))
+            options.add(option to value)
+            parent.addView(option, LinearLayout.LayoutParams(-1, -2))
         }
     }
 
@@ -235,69 +178,33 @@ class VoiceSettings(
         column.addView(text(title, 16f, primary()))
         val summary = text("", 12f, muted()).apply { setPadding(0, dp(4), 0, 0) }
         column.addView(summary)
-        val swatch = View(requireContext())
 
         fun update() {
             val color = savedColor(key, defaultColor)
             summary.text = "$description · ${hex(color)}"
-            swatch.background = rounded(color, 10).apply { setStroke(dp(1), muted()) }
             row.contentDescription = "$title, ${hex(color)}. Change color"
         }
         update()
         row.addView(column, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(12) })
-        row.addView(swatch, LinearLayout.LayoutParams(dp(32), dp(32)))
         row.setOnClickListener {
             showColorDialog(key, title, defaultColor) {
                 update()
-                updatePreview()
+                updateColorAvailability()
             }
         }
         parent.addView(row, LinearLayout.LayoutParams(-1, -2))
         return row
     }
 
-    private fun showColorDialog(
-        key: String,
-        title: String,
-        defaultColor: Int,
-        update: () -> Unit,
-    ) {
-        if (colorDialog?.isShowing == true) return
+    private fun showColorDialog(key: String, title: String, defaultColor: Int, update: () -> Unit) {
+        if (settings.getBool("integratedButton", false) || colorDialog?.isShowing == true) return
         val context = requireContext()
         val initialColor = savedColor(key, defaultColor)
         val picker = ColorPickerView(context, initialColor)
-        val draftPreview = ImageView(context)
-        val draftLabel = text(hex(initialColor), 12f, muted())
         val presetViews = mutableListOf<Pair<TextView, Int>>()
-        val integrated = settings.getBool("integratedButton", false)
-        val opacity = if (settings.getBool("translucentButton", false)) 160 else 255
-
-        fun renderPreview(
-            image: ImageView,
-            color: Int,
-        ) {
-            val buttonColor = if (key == "buttonColor") color else savedColor("buttonColor", VoiceMessages.DEFAULT_BUTTON_COLOR)
-            val iconColor = if (key == "buttonIconColor") color else savedColor("buttonIconColor", VoiceMessages.DEFAULT_ICON_COLOR)
-            image.apply {
-                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-                setPadding(dp(9), dp(9), dp(9), dp(9))
-                setImageDrawable(ContextCompat.getDrawable(context, com.lytefast.flexinput.R.e.ic_mic_grey_24dp)?.mutate())
-                drawable?.setTint(iconColor)
-                drawable?.alpha = opacity
-                background =
-                    if (integrated) {
-                        null
-                    } else {
-                        GradientDrawable().apply {
-                            shape = GradientDrawable.OVAL
-                            setColor(Color.argb(opacity, Color.red(buttonColor), Color.green(buttonColor), Color.blue(buttonColor)))
-                        }
-                    }
-            }
-        }
 
         val input =
-            EditText(context).apply {
+            DiscordSettingsUi.input(context).apply {
                 setSingleLine(true)
                 setSelectAllOnFocus(true)
                 inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
@@ -312,49 +219,34 @@ class VoiceSettings(
             }
         var updating = false
 
-        fun updateDraftPreview(color: Int) {
-            renderPreview(draftPreview, color)
-            draftLabel.text = hex(color)
+        fun updatePresetSelection(color: Int) {
             presetViews.forEach { (swatch, preset) ->
                 swatch.text = if (preset == color) "✓" else ""
                 (swatch.parent as View).isSelected = preset == color
             }
         }
 
-        fun setDraft(
-            color: Int,
-            updatePicker: Boolean = true,
-        ) {
+        fun setDraft(color: Int, updatePicker: Boolean = true) {
             updating = true
             input.setText(hex(color))
             input.error = null
             // Keep the picker's HSV state when it emitted the change. Converting an
             // achromatic RGB color back to HSV would discard the selected hue.
             if (updatePicker) picker.color = color
-            updateDraftPreview(color)
+            updatePresetSelection(color)
             updating = false
         }
         input.addTextChangedListener(
             object : TextWatcher {
-                override fun beforeTextChanged(
-                    text: CharSequence?,
-                    start: Int,
-                    count: Int,
-                    after: Int,
-                ) {}
+                override fun beforeTextChanged(text: CharSequence?, start: Int, count: Int, after: Int) {}
 
-                override fun onTextChanged(
-                    text: CharSequence?,
-                    start: Int,
-                    before: Int,
-                    count: Int,
-                ) {}
+                override fun onTextChanged(text: CharSequence?, start: Int, before: Int, count: Int) {}
 
                 override fun afterTextChanged(text: Editable?) {
                     if (!updating) {
                         parseColor(text.toString())?.let { color ->
                             picker.color = color
-                            updateDraftPreview(color)
+                            updatePresetSelection(color)
                             input.error = null
                         }
                     }
@@ -383,33 +275,6 @@ class VoiceSettings(
                             dp(12)
                     },
                 )
-                val previews =
-                    LinearLayout(context).apply {
-                        gravity = Gravity.CENTER_VERTICAL
-                        background = rounded(themeColor(context, "colorBackgroundTertiary", Color.DKGRAY), 12)
-                        setPadding(dp(12), dp(12), dp(12), dp(12))
-                    }
-
-                fun addPreview(
-                    label: String,
-                    image: ImageView,
-                    value: TextView,
-                ) {
-                    val column =
-                        LinearLayout(context).apply {
-                            orientation = LinearLayout.VERTICAL
-                            gravity = Gravity.CENTER
-                            addView(text(label, 12f, muted()).apply { setPadding(0, 0, 0, dp(8)) })
-                            addView(image, LinearLayout.LayoutParams(dp(44), dp(44)))
-                            addView(value.apply { setPadding(0, dp(8), 0, 0) })
-                        }
-                    previews.addView(column, LinearLayout.LayoutParams(0, -2, 1f))
-                }
-                val currentPreview = ImageView(context)
-                renderPreview(currentPreview, initialColor)
-                addPreview("Current", currentPreview, text(hex(initialColor), 12f, muted()))
-                addPreview("New", draftPreview, draftLabel)
-                addView(previews, LinearLayout.LayoutParams(-1, -2))
                 addView(text("Quick colors", 13f, primary()).apply { setPadding(0, dp(16), 0, dp(4)) })
                 val presets =
                     listOf(
@@ -455,7 +320,11 @@ class VoiceSettings(
                                 isFocusable = true
                                 contentDescription = "Use ${hex(color)}"
                                 val attribute = android.util.TypedValue()
-                                if (context.theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, attribute, true) &&
+                                if (context.theme.resolveAttribute(
+                                        android.R.attr.selectableItemBackground,
+                                        attribute,
+                                        true,
+                                    ) &&
                                     attribute.resourceId != 0
                                 ) {
                                     background = ContextCompat.getDrawable(context, attribute.resourceId)
@@ -472,10 +341,14 @@ class VoiceSettings(
                 }
                 addView(
                     picker,
-                    LinearLayout.LayoutParams(-1, minOf(dp(180), resources.displayMetrics.heightPixels / 3).coerceAtLeast(dp(96))).apply {
-                        topMargin =
-                            dp(12)
-                    },
+                    LinearLayout
+                        .LayoutParams(
+                            -1,
+                            minOf(dp(180), resources.displayMetrics.heightPixels / 3).coerceAtLeast(dp(96)),
+                        ).apply {
+                            topMargin =
+                                dp(12)
+                        },
                 )
                 addView(text("Hex color", 13f, primary()).apply { setPadding(0, dp(16), 0, 0) })
                 val hexRow =
@@ -488,10 +361,7 @@ class VoiceSettings(
         setDraft(initialColor)
         val scroll =
             object : ScrollView(context) {
-                override fun onMeasure(
-                    widthMeasureSpec: Int,
-                    heightMeasureSpec: Int,
-                ) {
+                override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
                     val maximum = resources.displayMetrics.heightPixels * 3 / 5
                     val available =
                         if (View.MeasureSpec.getMode(heightMeasureSpec) == View.MeasureSpec.UNSPECIFIED) {
@@ -499,18 +369,17 @@ class VoiceSettings(
                         } else {
                             minOf(maximum, View.MeasureSpec.getSize(heightMeasureSpec))
                         }
-                    super.onMeasure(widthMeasureSpec, View.MeasureSpec.makeMeasureSpec(available, View.MeasureSpec.AT_MOST))
+                    super.onMeasure(
+                        widthMeasureSpec,
+                        View.MeasureSpec.makeMeasureSpec(available, View.MeasureSpec.AT_MOST),
+                    )
                 }
             }.apply { addView(content) }
         val dialog =
             AlertDialog
                 .Builder(context)
-                .setCustomTitle(
-                    text(title, 20f, primary()).apply {
-                        setTypeface(Typeface.DEFAULT, Typeface.BOLD)
-                        setPadding(dp(20), dp(20), dp(20), dp(8))
-                    },
-                ).setView(scroll)
+                .setCustomTitle(DiscordSettingsUi.title(context, title))
+                .setView(scroll)
                 .setNegativeButton("Cancel", null)
                 .setNeutralButton("Reset", null)
                 .setPositiveButton("Save", null)
@@ -520,20 +389,15 @@ class VoiceSettings(
             hideKeyboard()
             if (colorDialog === dialog) colorDialog = null
         }
-        dialog.show()
+        DiscordSettingsUi.styleDialog(dialog, context)
         dialog.window?.apply {
-            setBackgroundDrawable(rounded(themeColor(context, "colorBackgroundSecondary", Color.rgb(47, 49, 54)), 16))
             setSoftInputMode(
-                WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN or WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE,
+                WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN or
+                    WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE,
             )
-            setLayout(minOf(dp(400), resources.displayMetrics.widthPixels - dp(32)), WindowManager.LayoutParams.WRAP_CONTENT)
         }
+        dialog.show()
         content.requestFocus()
-        for (which in listOf(AlertDialog.BUTTON_POSITIVE, AlertDialog.BUTTON_NEGATIVE, AlertDialog.BUTTON_NEUTRAL)) {
-            dialog.getButton(which).setTextColor(themeColor(context, "colorBrand", VoiceMessages.DEFAULT_BUTTON_COLOR))
-        }
-        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(muted())
-        dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setTextColor(primary())
         dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
             setDraft(defaultColor)
             hideKeyboard()
@@ -567,28 +431,28 @@ class VoiceSettings(
     override fun onDestroyView() {
         colorDialog?.dismiss()
         colorDialog = null
-        previewButton = null
-        previewCaption = null
         backgroundRow = null
+        microphoneRow = null
         super.onDestroyView()
     }
 
-    private fun row() =
-        LinearLayout(requireContext()).apply {
-            gravity = Gravity.CENTER_VERTICAL
-            minimumHeight = dp(72)
-            setPadding(dp(16), dp(12), dp(16), dp(12))
-            isFocusable = true
-            val value = android.util.TypedValue()
-            if (context.theme.resolveAttribute(android.R.attr.selectableItemBackground, value, true) && value.resourceId != 0) {
-                background = ContextCompat.getDrawable(context, value.resourceId)
-            }
+    private fun row() = LinearLayout(requireContext()).apply {
+        gravity = Gravity.CENTER_VERTICAL
+        minimumHeight = dp(72)
+        setPadding(dp(16), dp(12), dp(16), dp(12))
+        isFocusable = true
+        val value = android.util.TypedValue()
+        if (context.theme.resolveAttribute(android.R.attr.selectableItemBackground, value, true) &&
+            value.resourceId != 0
+        ) {
+            background = ContextCompat.getDrawable(context, value.resourceId)
         }
+    }
 
     private fun divider(parent: LinearLayout) {
         parent.addView(
             View(requireContext()).apply {
-                setBackgroundColor(themeColor(context, "colorBackgroundTertiary", Color.DKGRAY))
+                setBackgroundColor(themeColor(context, "colorBackgroundModifierAccent", Color.DKGRAY))
                 importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             },
             LinearLayout.LayoutParams(-1, dp(1)).apply {
@@ -598,20 +462,13 @@ class VoiceSettings(
         )
     }
 
-    private fun text(
-        value: String,
-        size: Float,
-        color: Int,
-    ) = TextView(requireContext()).apply {
+    private fun text(value: String, size: Float, color: Int) = DiscordSettingsUi.text(requireContext()).apply {
         text = value
         textSize = size
         setTextColor(color)
     }
 
-    private fun rounded(
-        color: Int,
-        radius: Int,
-    ) = GradientDrawable().apply {
+    private fun rounded(color: Int, radius: Int) = GradientDrawable().apply {
         cornerRadius = dp(radius).toFloat()
         setColor(color)
     }
@@ -620,10 +477,8 @@ class VoiceSettings(
 
     private fun muted() = themeColor(requireContext(), "colorTextMuted", Color.LTGRAY)
 
-    private fun savedColor(
-        key: String,
-        default: Int,
-    ) = settings.getInt(key, default).let { if (Color.alpha(it) == 0) default else it }
+    private fun savedColor(key: String, default: Int) =
+        settings.getInt(key, default).let { if (Color.alpha(it) == 0) default else it }
 
     private fun parseColor(value: String): Int? {
         val raw = value.trim().removePrefix("#")
@@ -635,16 +490,16 @@ class VoiceSettings(
     private fun dp(value: Int) = (value * resources.displayMetrics.density + 0.5f).toInt()
 }
 
-internal fun themeColor(
-    context: Context,
-    name: String,
-    fallback: Int,
-): Int {
+internal fun themeColor(context: Context, name: String, fallback: Int): Int {
     val id = Utils.getResId(name, "attr")
     if (id == 0) return fallback
     val value = android.util.TypedValue()
     if (!context.theme.resolveAttribute(id, value, true)) return fallback
-    if (value.type in android.util.TypedValue.TYPE_FIRST_COLOR_INT..android.util.TypedValue.TYPE_LAST_COLOR_INT) return value.data
+    if (value.type in
+        android.util.TypedValue.TYPE_FIRST_COLOR_INT..android.util.TypedValue.TYPE_LAST_COLOR_INT
+    ) {
+        return value.data
+    }
     return try {
         if (value.resourceId == 0) fallback else ContextCompat.getColor(context, value.resourceId)
     } catch (

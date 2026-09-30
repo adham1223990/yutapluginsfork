@@ -3,12 +3,12 @@ package com.github.yutaplug.customrpc
 import android.content.Context
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import com.aliucord.Http
-import com.aliucord.Utils
 import com.aliucord.annotations.AliucordPlugin
 import com.aliucord.entities.Plugin
+import com.aliucord.Http
 import com.aliucord.patcher.Hook
 import com.aliucord.patcher.PreHook
+import com.aliucord.Utils
 import com.discord.api.activity.Activity
 import com.discord.api.activity.ActivityAssets
 import com.discord.api.activity.ActivityType
@@ -22,10 +22,10 @@ import com.discord.stores.StoreGatewayConnection
 import com.discord.stores.StoreStream
 import com.discord.stores.StoreUserPresence
 import com.discord.utilities.icon.IconUtils
-import org.json.JSONArray
-import org.json.JSONObject
 import java.lang.ref.WeakReference
 import java.net.URI
+import org.json.JSONArray
+import org.json.JSONObject
 
 @AliucordPlugin
 class CustomRPC : Plugin() {
@@ -86,7 +86,7 @@ class CustomRPC : Plugin() {
     private val imageRequests = mutableSetOf<String>()
 
     init {
-        settingsTab = SettingsTab(CustomRPCSettings::class.java, SettingsTab.Type.BOTTOM_SHEET).withArgs(settings, this)
+        settingsTab = SettingsTab(CustomRPCSettings::class.java, SettingsTab.Type.PAGE).withArgs(settings, this)
     }
 
     fun isEnabled() = settings.getBool(ENABLED, false)

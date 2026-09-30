@@ -1,10 +1,10 @@
 package com.github.yutaplug.bettermessagelogger
 
-import android.app.AlertDialog
 import android.content.Context
 import android.view.Gravity
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import androidx.appcompat.app.AlertDialog
 import com.aliucord.Utils
 import java.text.DateFormat
 import java.util.Date
@@ -81,7 +81,7 @@ internal object EditHistoryDialog {
         val dialog = AlertDialog
             .Builder(
                 context,
-            ).setTitle("Edit history")
+            ).setCustomTitle(DiscordSettingsUi.title(context, "Edit history"))
             .setView(content)
             .setPositiveButton("Close", null)
             .create()

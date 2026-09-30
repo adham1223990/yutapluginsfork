@@ -1,19 +1,17 @@
 package com.github.yutaplug.bettermessagelogger
 
-import android.app.AlertDialog
 import android.content.Context
 import android.graphics.Color
-import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
-import android.graphics.drawable.StateListDrawable
+import android.graphics.Typeface
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
-import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.appcompat.app.AlertDialog
 import com.aliucord.Utils
 import com.discord.utilities.color.ColorCompat
 
@@ -32,7 +30,7 @@ internal class LoggerUi(val context: Context) {
         if (it == 0) fallback else ColorCompat.getThemedColor(context, it)
     }
 
-    fun text(value: CharSequence, size: Float = 14f, color: Int = primary) = TextView(context).apply {
+    fun text(value: CharSequence, size: Float = 14f, color: Int = primary) = DiscordSettingsUi.text(context).apply {
         text = value
         setTextSize(TypedValue.COMPLEX_UNIT_SP, size)
         setTextColor(color)
@@ -45,23 +43,15 @@ internal class LoggerUi(val context: Context) {
         isFocusableInTouchMode = true
     }
 
-    fun input(placeholder: String) = EditText(context).apply {
+    fun input(placeholder: String) = DiscordSettingsUi.input(context).apply {
         hint = placeholder
         setTextColor(primary)
         setHintTextColor(muted)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
         setSingleLine(true)
-        setPadding(dp(14), dp(12), dp(14), dp(12))
+        setPadding(0, dp(12), 0, dp(12))
         minimumHeight = dp(52)
-        background = StateListDrawable().apply {
-            fun outline(color: Int) = GradientDrawable().apply {
-                setColor(surface)
-                cornerRadius = dp(10).toFloat()
-                setStroke(dp(1), color)
-            }
-            addState(intArrayOf(android.R.attr.state_focused), outline(brand))
-            addState(intArrayOf(), outline(muted))
-        }
+        background = null
     }
 
     fun scroll(content: View, fraction: Float = 0.35f): ScrollView = object : ScrollView(context) {
@@ -82,7 +72,7 @@ internal class LoggerUi(val context: Context) {
     fun card() = column().apply {
         background = GradientDrawable().apply {
             setColor(surface)
-            cornerRadius = dp(12).toFloat()
+            cornerRadius = dp(4).toFloat()
         }
         setPadding(dp(12), dp(12), dp(12), dp(12))
     }
@@ -108,7 +98,7 @@ internal class LoggerUi(val context: Context) {
         click: () -> Unit,
     ): TextView {
         val row = column().apply {
-            setPadding(dp(8), dp(10), dp(8), dp(10))
+            setPadding(dp(16), dp(16), dp(16), dp(16))
             minimumHeight = dp(64)
             isFocusable = true
             contentDescription = "$title. $subtitle"
@@ -130,30 +120,15 @@ internal class LoggerUi(val context: Context) {
 
     @Suppress("DEPRECATION") // ADJUST_RESIZE is needed on the Android 5+ versions this plugin supports.
     fun style(dialog: AlertDialog) {
-        // Inflate and theme the window before it is attached; onShow is too late for its first frame.
-        dialog.create()
+        DiscordSettingsUi.styleDialog(dialog, context)
         dialog.window?.setSoftInputMode(
             WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN or
                 WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE,
         )
-        dialog.window?.setBackgroundDrawable(
-            GradientDrawable().apply {
-                setColor(background)
-                cornerRadius = dp(16).toFloat()
-            },
-        )
-        val titleId = context.resources.getIdentifier("alertTitle", "id", "android")
-        if (titleId != 0) dialog.findViewById<TextView>(titleId)?.setTextColor(primary)
         dialog.findViewById<TextView>(android.R.id.message)?.setTextColor(primary)
-        listOf(AlertDialog.BUTTON_POSITIVE, AlertDialog.BUTTON_NEGATIVE, AlertDialog.BUTTON_NEUTRAL).forEach {
-            dialog.getButton(it)?.apply {
-                setTextColor(brand)
-                isAllCaps = false
-            }
-        }
     }
 
-    fun heading(title: String) = text(title, 17f).apply { setTypeface(Typeface.DEFAULT, Typeface.BOLD) }
+    fun heading(title: String) = text(title, 17f).apply { setTypeface(typeface, Typeface.BOLD) }
 
     fun smallButton(title: String, color: Int = brand, click: () -> Unit) = text(title, 13f, color).apply {
         gravity = Gravity.CENTER

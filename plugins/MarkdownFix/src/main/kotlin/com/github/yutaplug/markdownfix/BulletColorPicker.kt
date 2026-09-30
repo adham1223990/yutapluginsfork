@@ -21,12 +21,12 @@ internal class BulletColorPicker(context: Context, private val onColor: (String)
         orientation = VERTICAL
         setPadding(0, MarkdownAppearance.dp(context, 16), 0, 0)
         listOf("Hue", "Saturation", "Brightness", "Opacity").forEachIndexed { index, name ->
-            labels += TextView(context).apply {
+            labels += DiscordSettingsUi.text(context).apply {
                 textSize = 13f
                 setTextColor(MarkdownAppearance.themedColor(context, "colorHeaderPrimary", Color.WHITE))
                 addView(this)
             }
-            bars += SeekBar(context).apply {
+            bars += SeekBar(context, null, 0, com.lytefast.flexinput.R.i.UiKit_SeekBar).apply {
                 max = if (index == 0) 360 else 100
                 contentDescription = name
                 thumbTintList = ColorStateList.valueOf(

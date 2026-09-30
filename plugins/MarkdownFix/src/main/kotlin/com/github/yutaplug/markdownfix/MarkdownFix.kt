@@ -32,7 +32,7 @@ class MarkdownFix : Plugin() {
         games = resolver
         val parser = MarkdownParser(settings, resolver)
         settingsTab =
-            SettingsTab(MarkdownFixSettings::class.java, SettingsTab.Type.BOTTOM_SHEET).withArgs(settings, this)
+            SettingsTab(MarkdownFixSettings::class.java, SettingsTab.Type.PAGE).withArgs(settings, this)
         try {
             installBlockRendering()
             installRichLinks(parser)

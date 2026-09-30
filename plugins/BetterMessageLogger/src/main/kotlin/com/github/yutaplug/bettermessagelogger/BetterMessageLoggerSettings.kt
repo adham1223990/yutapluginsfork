@@ -1,44 +1,42 @@
 package com.github.yutaplug.bettermessagelogger
 
-import android.app.AlertDialog
 import android.graphics.Color
-import android.os.Bundle
 import android.text.Editable
 import android.text.InputType
-import android.text.SpannableString
 import android.text.TextWatcher
-import android.text.style.ForegroundColorSpan
 import android.view.Gravity
 import android.view.View
 import android.widget.LinearLayout
 import android.widget.TextView
-import com.aliucord.Utils
+import androidx.appcompat.app.AlertDialog
 import com.aliucord.api.SettingsAPI
-import com.aliucord.widgets.BottomSheet
+import com.aliucord.fragments.SettingsPage
+import com.aliucord.Utils
 import com.discord.views.CheckedSetting
 import java.util.Locale
 import com.github.yutaplug.bettermessagelogger.BetterMessageLogger.Companion as Keys
 
-class BetterMessageLoggerSettings(private val settings: SettingsAPI) : BottomSheet() {
-    // Android can recreate the sheet without the original constructor arguments.
+class BetterMessageLoggerSettings(private val settings: SettingsAPI) : SettingsPage() {
+    // Android can recreate the page without the original constructor arguments.
     constructor() : this(SettingsAPI("BetterMessageLogger"))
 
     private lateinit var ui: LoggerUi
     private var storageCaption: TextView? = null
     private var databaseToggle: CheckedSetting? = null
-    private var preview: TextView? = null
     private val captions = HashMap<String, TextView>()
     private var dialog: AlertDialog? = null
 
-    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
-        super.onViewCreated(view, savedInstanceState)
+    override fun onViewBound(view: View) {
+        super.onViewBound(view)
+        setActionBarTitle("BetterMessageLogger")
+        setActionBarSubtitle("Plugin settings")
         ui = LoggerUi(requireContext())
-        linearLayout.setPadding(ui.dp(16), ui.dp(8), ui.dp(16), ui.dp(28))
-        linearLayout.addView(ui.heading("BetterMessageLogger").apply { textSize = 23f })
+        linearLayout.setPadding(0, ui.dp(16), 0, ui.dp(24))
+        linearLayout.setBackgroundColor(ui.background)
         linearLayout.addView(
             ui
                 .text("Deleted messages and previous versions, right in your chats.", 14f, ui.muted)
-                .apply { setPadding(0, ui.dp(6), 0, ui.dp(18)) },
+                .apply { setPadding(ui.dp(16), 0, ui.dp(16), ui.dp(16)) },
         )
 
         val storage = section("Storage", "Saved logs are stored in Aliucord/BetterMessageLogger.db.")
@@ -52,7 +50,7 @@ class BetterMessageLoggerSettings(private val settings: SettingsAPI) : BottomShe
                 BetterMessageLogger.instance?.setDatabaseEnabled(it)
                 updateStorage()
             }
-        storageCaption = ui.text("", 12f, ui.muted).apply { setPadding(ui.dp(8), ui.dp(8), ui.dp(8), ui.dp(8)) }
+        storageCaption = ui.text("", 12f, ui.muted).apply { setPadding(ui.dp(16), ui.dp(8), ui.dp(16), ui.dp(8)) }
         storage.addView(storageCaption)
         ui.divider(storage)
         ui.action(storage, "Export DB to TXT", "Save readable logs to Aliucord/BetterMessageLogger.txt") {
@@ -61,9 +59,7 @@ class BetterMessageLoggerSettings(private val settings: SettingsAPI) : BottomShe
         ui.divider(storage)
         ui.action(storage, "Clear saved logs", "Delete saved messages and edit history.", ui.danger) { confirmClear() }
 
-        val appearance = section("Appearance", "Preview your deleted-message colors below.")
-        preview = ui.text("", 15f).apply { setPadding(ui.dp(8), ui.dp(12), ui.dp(8), ui.dp(16)) }
-        appearance.addView(preview)
+        val appearance = section("Appearance", "Customize the deleted tag and message text colors.")
         captions[Keys.DELETED_LABEL_COLOR] =
             ui.action(appearance, "Deleted tag color", colorValue(Keys.DELETED_LABEL_COLOR)) {
                 colorDialog(Keys.DELETED_LABEL_COLOR, "Deleted tag color")
@@ -133,9 +129,14 @@ class BetterMessageLoggerSettings(private val settings: SettingsAPI) : BottomShe
     }
 
     private fun section(title: String, description: String): LinearLayout {
-        linearLayout.addView(ui.heading(title).apply { setPadding(ui.dp(4), ui.dp(16), 0, ui.dp(6)) })
-        linearLayout.addView(ui.text(description, 13f, ui.muted).apply { setPadding(ui.dp(4), 0, ui.dp(4), ui.dp(10)) })
-        return ui.card().also { linearLayout.addView(it, LinearLayout.LayoutParams(-1, -2)) }
+        linearLayout.addView(DiscordSettingsUi.divider(requireContext()), LinearLayout.LayoutParams(-1, ui.dp(1)))
+        linearLayout.addView(DiscordSettingsUi.header(requireContext(), title))
+        linearLayout.addView(
+            ui.text(description, 14f, ui.muted).apply {
+                setPadding(ui.dp(16), 0, ui.dp(16), ui.dp(8))
+            },
+        )
+        return ui.column().also { linearLayout.addView(it, LinearLayout.LayoutParams(-1, -2)) }
     }
 
     private fun toggle(
@@ -169,7 +170,9 @@ class BetterMessageLoggerSettings(private val settings: SettingsAPI) : BottomShe
                 "Database off · logs stay in memory for this session"
             }
         BetterMessageLogger.instance?.storageStatistics { stats ->
-            if (!isAdded || storageCaption !== target) return@storageStatistics
+            // Aliucord attaches the proxy fragment, so this page's isAdded remains false.
+            // The caption is cleared on destruction and replaced when the view is rebuilt.
+            if (storageCaption !== target) return@storageStatistics
             databaseToggle?.isChecked = settings.getBool("database", false)
             if (stats != null) {
                 val size = android.text.format.Formatter.formatShortFileSize(requireContext(), stats.bytes)
@@ -177,7 +180,9 @@ class BetterMessageLoggerSettings(private val settings: SettingsAPI) : BottomShe
                 target.text =
                     "${stats.messages} saved messages · ${stats.edits} edits · $size\nAliucord/BetterMessageLogger.db$paused"
             } else if (settings.getBool("database", false)) {
-                target.text = "Database is opening"
+                target.text = "Could not read database statistics"
+            } else {
+                target.text = "Database off · logs stay in memory for this session"
             }
         }
     }
@@ -194,13 +199,16 @@ class BetterMessageLoggerSettings(private val settings: SettingsAPI) : BottomShe
         showDialog(
             AlertDialog
                 .Builder(requireContext())
-                .setTitle("Clear saved logs?")
+                .setCustomTitle(DiscordSettingsUi.title(requireContext(), "Clear saved logs?"))
                 .setView(content)
                 .setNegativeButton("Cancel", null)
                 .setPositiveButton("Clear logs") { _, _ ->
-                    BetterMessageLogger.instance?.clearDatabase { if (isAdded) updateStorage() }
+                    BetterMessageLogger.instance?.clearDatabase { if (storageCaption != null) updateStorage() }
                 }.create(),
-        ) { dialog?.getButton(AlertDialog.BUTTON_POSITIVE)?.setTextColor(ui.danger) }
+        ) {
+            dialog?.getButton(AlertDialog.BUTTON_POSITIVE)?.backgroundTintList =
+                android.content.res.ColorStateList.valueOf(ui.danger)
+        }
     }
 
     private fun idAction(parent: LinearLayout, key: String, title: String, description: String) {
@@ -272,7 +280,7 @@ class BetterMessageLoggerSettings(private val settings: SettingsAPI) : BottomShe
         updateList()
         val dialog = AlertDialog
             .Builder(requireContext())
-            .setTitle(title)
+            .setCustomTitle(DiscordSettingsUi.title(requireContext(), title))
             .setView(content)
             .setNegativeButton("Close", null)
             .setPositiveButton("Add", null)
@@ -292,7 +300,7 @@ class BetterMessageLoggerSettings(private val settings: SettingsAPI) : BottomShe
                     else -> {
                         settings.setString(key, readIds(key).apply { add(id) }.joinToString(","))
                         input.error = null
-                        input.text.clear()
+                        input.text?.clear()
                         filtersChanged()
                         updateList()
                     }
@@ -329,19 +337,6 @@ class BetterMessageLoggerSettings(private val settings: SettingsAPI) : BottomShe
 
     private fun updateColors() {
         listOf(Keys.DELETED_LABEL_COLOR, Keys.DELETED_MESSAGE_COLOR).forEach { captions[it]?.text = colorValue(it) }
-        val message = "A deleted message"
-        val tag = if (settings.getBool(Keys.SHOW_DELETED_TAG, true)) " (deleted)" else ""
-        preview?.text = SpannableString(message + tag).apply {
-            setSpan(ForegroundColorSpan(Color.parseColor(colorValue(Keys.DELETED_MESSAGE_COLOR))), 0, message.length, 0)
-            if (tag.isNotEmpty()) {
-                setSpan(
-                    ForegroundColorSpan(Color.parseColor(colorValue(Keys.DELETED_LABEL_COLOR))),
-                    message.length,
-                    length,
-                    0,
-                )
-            }
-        }
     }
 
     private fun colorDialog(key: String, title: String) {
@@ -357,12 +352,6 @@ class BetterMessageLoggerSettings(private val settings: SettingsAPI) : BottomShe
         val picker = ColorPickerView(requireContext(), Color.parseColor(colorValue(key)))
         val palette = ui.card().apply { addView(picker, LinearLayout.LayoutParams(-1, ui.dp(190))) }
         content.addView(palette, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(16) })
-        val sample = ui.text("Deleted message preview", 16f).apply {
-            gravity = Gravity.CENTER
-            setPadding(ui.dp(12), ui.dp(16), ui.dp(12), ui.dp(16))
-            background = ui.card().background
-        }
-        content.addView(sample, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(12) })
         content.addView(ui.text("Hex color", 13f, ui.muted).apply { setPadding(0, ui.dp(16), 0, ui.dp(8)) })
         val input = ui.input("#RRGGBB or #AARRGGBB").apply {
             setText(colorValue(key))
@@ -371,14 +360,12 @@ class BetterMessageLoggerSettings(private val settings: SettingsAPI) : BottomShe
             contentDescription = "Hex color"
         }
         content.addView(input)
-        sample.setTextColor(picker.color)
         var updating = false
         picker.onColorChanged = { color ->
             updating = true
             input.setText(hex(color))
             input.setSelection(input.length())
             updating = false
-            sample.setTextColor(color)
         }
         input.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
@@ -390,13 +377,12 @@ class BetterMessageLoggerSettings(private val settings: SettingsAPI) : BottomShe
                 parseColor(s.toString())?.let {
                     input.error = null
                     picker.color = it
-                    sample.setTextColor(it)
                 }
             }
         })
         val dialog = AlertDialog
             .Builder(requireContext())
-            .setTitle(title)
+            .setCustomTitle(DiscordSettingsUi.title(requireContext(), title))
             .setView(ui.scroll(content, 0.60f))
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Save", null)
@@ -437,7 +423,6 @@ class BetterMessageLoggerSettings(private val settings: SettingsAPI) : BottomShe
         dialog = null
         storageCaption = null
         databaseToggle = null
-        preview = null
         captions.clear()
         super.onDestroyView()
     }

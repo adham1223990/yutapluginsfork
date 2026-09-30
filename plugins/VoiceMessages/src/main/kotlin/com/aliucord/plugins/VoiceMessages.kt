@@ -28,10 +28,10 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.recyclerview.widget.RecyclerView
-import com.aliucord.Utils
 import com.aliucord.annotations.AliucordPlugin
 import com.aliucord.entities.Plugin
 import com.aliucord.patcher.Hook
+import com.aliucord.Utils
 import com.aliucord.utils.DimenUtils
 import com.discord.api.channel.ChannelUtils
 import com.discord.api.permission.Permission
@@ -44,11 +44,11 @@ import com.discord.widgets.chat.input.ChatInputViewModel
 import com.discord.widgets.chat.input.WidgetChatInput
 import com.lytefast.flexinput.widget.FlexEditText
 import java.io.File
-import java.io.IOException
 import java.io.InterruptedIOException
+import java.io.IOException
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.Future
 import java.util.concurrent.FutureTask
-import java.util.concurrent.atomic.AtomicBoolean
 
 @AliucordPlugin
 class VoiceMessages : Plugin() {
@@ -74,6 +74,7 @@ class VoiceMessages : Plugin() {
 
     private var recording: Recording? = null
     private var button: AppCompatImageButton? = null
+    private var cancelButton: AppCompatImageButton? = null
     private var waveform: WaveFormView? = null
     private var editText: FlexEditText? = null
     private var container: ViewGroup? = null
@@ -171,7 +172,7 @@ class VoiceMessages : Plugin() {
         running = true
         generation++
         instance = this
-        settingsTab = SettingsTab(VoiceSettings::class.java, SettingsTab.Type.BOTTOM_SHEET).withArgs(settings)
+        settingsTab = SettingsTab(VoiceSettings::class.java, SettingsTab.Type.PAGE).withArgs(settings)
         patcher.patch(
             WidgetChatInput::class.java,
             "onViewBound",
@@ -245,6 +246,28 @@ class VoiceMessages : Plugin() {
     @SuppressLint("ClickableViewAccessibility")
     private fun createViews(context: Context) {
         waveform = WaveFormView(context).apply { visibility = View.GONE }
+        cancelButton = AppCompatImageButton(context).apply {
+            minimumWidth = 0
+            minimumHeight = 0
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            setImageDrawable(ContextCompat.getDrawable(context, Utils.getResId("ic_close_24dp", "drawable"))?.mutate())
+            drawable?.setTint(themeColor(context, "colorInteractiveNormal", Color.LTGRAY))
+            background = android.graphics.drawable.RippleDrawable(
+                android.content.res.ColorStateList.valueOf(
+                    themeColor(context, "colorBackgroundModifierSelected", 0x334f545c),
+                ),
+                null,
+                android.graphics.drawable.ColorDrawable(Color.WHITE),
+            )
+            contentDescription = "Cancel voice recording"
+            visibility = View.GONE
+            setOnClickListener {
+                if (recording != null) {
+                    finishRecording(false)
+                    Utils.showToast("Voice recording cancelled")
+                }
+            }
+        }
         button =
             AppCompatImageButton(context).apply {
                 id = View.generateViewId()
@@ -355,6 +378,9 @@ class VoiceMessages : Plugin() {
             originalContainerParams = (group.layoutParams as? RelativeLayout.LayoutParams)?.let { RelativeLayout.LayoutParams(it) }
             createViews(input.context)
             group.addView(waveform, 0, LinearLayout.LayoutParams(0, dp(30), 1f).apply { gravity = Gravity.CENTER_VERTICAL })
+            group.addView(cancelButton, 0, LinearLayout.LayoutParams(dp(48), dp(48)).apply {
+                gravity = Gravity.CENTER_VERTICAL
+            })
             attachmentRoot = (layout.parent as? View) ?: root
             attachmentRoot?.addOnLayoutChangeListener(attachmentListener)
             placeButton()
@@ -371,8 +397,10 @@ class VoiceMessages : Plugin() {
         target ?: return
         val params =
             if (target === container) {
-                LinearLayout.LayoutParams(dp(36), dp(36)).apply { gravity = Gravity.CENTER_VERTICAL }
+                current.setPadding(0, dp(4), 0, dp(4))
+                LinearLayout.LayoutParams(dp(24), dp(36)).apply { gravity = Gravity.CENTER_VERTICAL }
             } else {
+                current.setPadding(dp(4), dp(4), dp(4), dp(4))
                 RelativeLayout.LayoutParams(dp(36), dp(36)).apply {
                     addRule(RelativeLayout.ALIGN_PARENT_RIGHT)
                     addRule(RelativeLayout.CENTER_VERTICAL)
@@ -487,14 +515,22 @@ class VoiceMessages : Plugin() {
     private fun updateRecordingUi() {
         editText?.visibility = if (recording == null) originalEditVisibility else View.GONE
         waveform?.visibility = if (recording == null) View.GONE else View.VISIBLE
+        cancelButton?.visibility = if (recording != null && !holdRecording) View.VISIBLE else View.GONE
+        val integrated = settings.getBool("integratedButton", false)
         button?.drawable?.apply {
-            setTint(if (recording != null) Color.rgb(237, 66, 69) else settingColor("buttonIconColor", DEFAULT_ICON_COLOR))
+            setTint(
+                when {
+                    recording != null -> Color.rgb(237, 66, 69)
+                    integrated -> themeColor(button!!.context, "colorInteractiveNormal", Color.LTGRAY)
+                    else -> settingColor("buttonIconColor", DEFAULT_ICON_COLOR)
+                },
+            )
             alpha = if (settings.getBool("translucentButton", false)) 160 else 255
         }
         button?.contentDescription =
             when {
                 recording != null && holdRecording -> "Release to send voice message"
-                recording != null -> "Stop recording voice message"
+                recording != null -> "Send voice recording"
                 settings.getBool("disableSelectionPopup", false) -> "Hold to record voice message"
                 else -> "Choose voice message type"
             }
@@ -1064,8 +1100,10 @@ class VoiceMessages : Plugin() {
         editText?.visibility = originalEditVisibility
         originalContainerParams?.let { container?.layoutParams = it }
         (button?.parent as? ViewGroup)?.removeView(button)
+        (cancelButton?.parent as? ViewGroup)?.removeView(cancelButton)
         (waveform?.parent as? ViewGroup)?.removeView(waveform)
         button = null
+        cancelButton = null
         waveform = null
         editText = null
         container = null

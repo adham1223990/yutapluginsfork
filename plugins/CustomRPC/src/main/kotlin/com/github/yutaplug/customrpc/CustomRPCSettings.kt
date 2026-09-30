@@ -3,47 +3,43 @@ package com.github.yutaplug.customrpc
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Color
-import android.graphics.Typeface
-import android.graphics.drawable.ColorDrawable
-import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.net.Uri
-import android.os.Bundle
 import android.text.Editable
 import android.text.InputFilter
 import android.text.InputType
 import android.text.TextWatcher
-import android.view.Gravity
 import android.view.View
-import android.widget.Button
-import android.widget.CheckBox
-import android.widget.CompoundButton
 import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.RadioButton
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
-import com.aliucord.Utils
 import com.aliucord.api.SettingsAPI
-import com.aliucord.widgets.BottomSheet
+import com.aliucord.fragments.SettingsPage
+import com.aliucord.Utils
 import com.discord.utilities.color.ColorCompat
 import com.discord.views.CheckedSetting
 
-class CustomRPCSettings(private val settings: SettingsAPI, private val plugin: CustomRPC) : BottomSheet() {
+class CustomRPCSettings(private val settings: SettingsAPI, private val plugin: CustomRPC) : SettingsPage() {
     private val inputs = linkedMapOf<String, EditText>()
-    private lateinit var preview: TextView
     private lateinit var enabled: CheckedSetting
     private lateinit var typeSummary: TextView
     private var dirty = false
 
-    override fun onViewCreated(view: View, bundle: Bundle?) {
-        super.onViewCreated(view, bundle)
+    override fun onViewBound(view: View) {
+        super.onViewBound(view)
+        setActionBarTitle("CustomRPC")
+        setActionBarSubtitle("Plugin settings")
         inputs.clear()
         dirty = false
-        linearLayout.setPadding(dp(16), dp(8), dp(16), dp(24))
-        addView(text("CustomRPC", 24).apply { setTypeface(typeface, Typeface.BOLD) })
-        addView(text("Create your profile activity. Save changes when you’re ready.", 14, "colorTextMuted"))
+        linearLayout.setPadding(0, dp(16), 0, dp(24))
+        linearLayout.setBackgroundColor(color("colorBackgroundPrimary", Color.DKGRAY))
+        addView(
+            text("Create your profile activity. Save changes when you’re ready.", 14, "colorTextMuted").apply {
+                setPadding(dp(16), 0, dp(16), dp(16))
+            },
+        )
         enabled =
             Utils
                 .createCheckedSetting(
@@ -63,15 +59,6 @@ class CustomRPCSettings(private val settings: SettingsAPI, private val plugin: C
                     }
                 }
         addView(enabled)
-        section("Preview")
-        preview =
-            text("", 16).apply {
-                setPadding(dp(16), dp(16), dp(16), dp(16))
-                background = card()
-                contentDescription =
-                    "Activity text preview"
-            }
-        addView(preview)
         section("Activity")
         typeSummary = action("Activity type", CustomRPC.typeLabel(plugin.activityType())) {
             choiceDialog(
@@ -84,7 +71,6 @@ class CustomRPCSettings(private val settings: SettingsAPI, private val plugin: C
                     val index = selected.indexOfFirst { it }
                     if (index >= 0) plugin.setType(CustomRPC.types[index])
                     typeSummary.text = CustomRPC.typeLabel(plugin.activityType())
-                    updatePreview()
                 },
             )
         }
@@ -97,7 +83,7 @@ class CustomRPCSettings(private val settings: SettingsAPI, private val plugin: C
                 "Public image URLs override asset keys. An application ID lets Discord proxy images for other clients.",
                 14,
                 "colorTextMuted",
-            ),
+            ).apply { setPadding(dp(16), 0, dp(16), dp(8)) },
         )
         input("Application ID", CustomRPC.APPLICATION_ID, "Optional", InputType.TYPE_CLASS_NUMBER, 20)
         action("Developer Portal", "Manage applications and uploaded assets") {
@@ -158,7 +144,7 @@ class CustomRPCSettings(private val settings: SettingsAPI, private val plugin: C
                 "Flags alone do not enable joining or spectating; these require activity secrets.",
                 13,
                 "colorTextMuted",
-            ),
+            ).apply { setPadding(dp(16), 0, dp(16), dp(8)) },
         )
         button("Save changes", true) {
             if (save()) Utils.showToast(if (plugin.isEnabled()) "Activity updated" else "Configuration saved")
@@ -177,7 +163,6 @@ class CustomRPCSettings(private val settings: SettingsAPI, private val plugin: C
             enabled.isChecked = false
             Utils.showToast("Activity removed")
         }
-        updatePreview()
     }
 
     private fun input(
@@ -188,23 +173,20 @@ class CustomRPCSettings(private val settings: SettingsAPI, private val plugin: C
             InputType.TYPE_TEXT_FLAG_CAP_SENTENCES,
         maxLength: Int = 128,
     ) {
-        // Keep the label outside the editor: TextInput's floating hint overlaps an explicit placeholder.
         val field = LinearLayout(requireContext()).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(12), dp(16), dp(8))
-            background = card()
+            addView(text(label, 14, "colorTextMuted"))
         }
-        field.addView(text(label, 12, "colorTextMuted"))
-        val editor = EditText(requireContext()).apply {
+        val editor = DiscordSettingsUi.input(requireContext()).apply {
             setText(plugin.value(key))
             textSize = 16f
-            background = null
-            setPadding(0, dp(6), 0, dp(6))
             minimumHeight = dp(40)
-            contentDescription = label
             inputType = type
             setSingleLine(true)
+            // Use the row's gutter for both the fixed label and native editor.
+            setPadding(0, paddingTop, 0, paddingBottom)
             this.hint = hint
+            contentDescription = "$label. $hint"
             filters = arrayOf(InputFilter.LengthFilter(maxLength))
             setTextColor(color("colorTextNormal", Color.WHITE))
             setHintTextColor(color("colorTextMuted", Color.GRAY))
@@ -215,7 +197,6 @@ class CustomRPCSettings(private val settings: SettingsAPI, private val plugin: C
                     dirty = true
                     error =
                         null
-                    updatePreview()
                 }
 
                 override fun afterTextChanged(s: Editable?) {}
@@ -223,9 +204,11 @@ class CustomRPCSettings(private val settings: SettingsAPI, private val plugin: C
         }
         inputs[key] = editor
         field.addView(editor, LinearLayout.LayoutParams(-1, -2))
-        val params = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) }
+        val params = LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(16), dp(8), dp(16), dp(8)) }
         linearLayout.addView(field, params)
     }
+
+    private var activeDialog: AlertDialog? = null
 
     private fun choiceDialog(
         title: String,
@@ -236,119 +219,53 @@ class CustomRPCSettings(private val settings: SettingsAPI, private val plugin: C
         save: (BooleanArray) -> Unit,
         defaults: (() -> Unit)? = null,
     ) {
+        activeDialog?.dismiss()
         val content = LinearLayout(requireContext()).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(20), dp(20), dp(12))
-            background = card()
-        }
-        content.addView(text(title, 22).apply { setTypeface(typeface, Typeface.BOLD) })
-        content.addView(
-            text(description, 14, "colorTextMuted").apply {
-                setPadding(0, dp(8), 0, dp(16))
-            },
-        )
-        val dialog = AlertDialog.Builder(requireContext()).setView(content).create()
-        val choices = LinearLayout(requireContext()).apply { orientation = LinearLayout.VERTICAL }
-        val indicators = mutableListOf<CompoundButton>()
-        labels.forEachIndexed { index, label ->
-            val indicator: CompoundButton = if (multiple) CheckBox(requireContext()) else RadioButton(requireContext())
-            indicator.apply {
-                isChecked = selected[index]
-                isClickable = false
-                isFocusable = false
-                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-                buttonTintList = ColorStateList(
-                    arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-                    intArrayOf(color("colorBrand", Color.rgb(88, 101, 242)), color("colorTextMuted", Color.GRAY)),
-                )
-            }
-            indicators.add(indicator)
-            val row = LinearLayout(requireContext()).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                minimumHeight = dp(56)
-                setPadding(dp(4), dp(4), dp(8), dp(4))
-                background = RippleDrawable(
-                    ColorStateList.valueOf(color("colorBackgroundModifierSelected", 0x334f545c)),
-                    null,
-                    card(),
-                )
-                isFocusable = true
-                contentDescription = label
-                setOnClickListener {
-                    if (multiple) {
-                        selected[index] = !selected[index]
-                        indicator.isChecked = selected[index]
-                    } else {
-                        selected.fill(false)
-                        selected[index] = true
-                        indicators.forEachIndexed { item, button -> button.isChecked = item == index }
-                        save(selected)
-                        dialog.dismiss()
-                    }
-                }
-            }
-            row.addView(indicator)
-            row.addView(text(label, 16), LinearLayout.LayoutParams(0, -2, 1f))
-            choices.addView(row)
-        }
-        val scroll = ScrollView(requireContext()).apply {
-            isFillViewport = false
-            addView(choices)
-        }
-        content.addView(
-            scroll,
-            LinearLayout.LayoutParams(
-                -1,
-                minOf(
-                    dp(labels.size * 56),
-                    resources.displayMetrics.heightPixels / 2,
-                ),
-            ),
-        )
-        val footer = LinearLayout(requireContext()).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.END or Gravity.CENTER_VERTICAL
-            setPadding(0, dp(12), 0, 0)
-        }
-
-        fun footerButton(label: String, primary: Boolean, action: () -> Unit) {
-            footer.addView(
-                Button(requireContext()).apply {
-                    text = label
-                    textSize = 14f
-                    isAllCaps = false
-                    minimumWidth = 0
-                    setTextColor(if (primary) Color.WHITE else color("colorTextNormal", Color.WHITE))
-                    background = GradientDrawable().apply {
-                        cornerRadius = dp(8).toFloat()
-                        setColor(if (primary) color("colorBrand", Color.rgb(88, 101, 242)) else Color.TRANSPARENT)
-                    }
-                    setOnClickListener { action() }
+            addView(
+                text(description, 14, "colorTextMuted").apply {
+                    setPadding(dp(16), dp(8), dp(16), dp(16))
                 },
-                LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(4) },
             )
         }
-        footerButton("Cancel", false) { dialog.dismiss() }
-        if (defaults != null) {
-            footerButton("Defaults", false) {
-                defaults()
-                dialog.dismiss()
-            }
+        val choices = LinearLayout(requireContext()).apply { orientation = LinearLayout.VERTICAL }
+        val builder = AlertDialog
+            .Builder(requireContext())
+            .setCustomTitle(DiscordSettingsUi.title(requireContext(), title))
+            .setView(content)
+            .setNegativeButton("Cancel", null)
+        if (multiple) builder.setPositiveButton("Save") { _, _ -> save(selected) }
+        if (defaults != null) builder.setNeutralButton("Defaults") { _, _ -> defaults() }
+        val dialog = builder.create()
+        labels.forEachIndexed { index, label ->
+            val option = Utils
+                .createCheckedSetting(
+                    requireContext(),
+                    if (multiple) CheckedSetting.ViewType.CHECK else CheckedSetting.ViewType.RADIO,
+                    label,
+                    null,
+                ).apply {
+                    isChecked = selected[index]
+                    setOnCheckedListener { checked ->
+                        if (multiple) {
+                            selected[index] = checked
+                        } else if (checked) {
+                            selected.fill(false)
+                            selected[index] = true
+                            save(selected)
+                            dialog.dismiss()
+                        }
+                    }
+                }
+            choices.addView(option, LinearLayout.LayoutParams(-1, -2))
         }
-        if (multiple) {
-            footerButton("Save", true) {
-                save(selected)
-                dialog.dismiss()
-            }
-        }
-        content.addView(footer)
-        // Initialize the dialog and its final window size before the first visible frame.
-        dialog.create()
-        dialog.window?.apply {
-            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-            setLayout(minOf(resources.displayMetrics.widthPixels - dp(32), dp(480)), -2)
-        }
+        content.addView(
+            ScrollView(requireContext()).apply { addView(choices) },
+            LinearLayout.LayoutParams(-1, minOf(dp(labels.size * 64), resources.displayMetrics.heightPixels / 2)),
+        )
+        activeDialog = dialog
+        dialog.setOnDismissListener { if (activeDialog === dialog) activeDialog = null }
+        DiscordSettingsUi.styleDialog(dialog, requireContext())
         dialog.show()
     }
 
@@ -375,35 +292,21 @@ class CustomRPCSettings(private val settings: SettingsAPI, private val plugin: C
         return true
     }
 
-    private fun updatePreview() {
-        if (!::preview.isInitialized) return
-
-        fun value(key: String) = inputs[key]?.text?.toString()?.trim() ?: plugin.value(key)
-        preview.text =
-            listOf(
-                "${CustomRPC.typeLabel(plugin.activityType())} ${value(CustomRPC.NAME).ifEmpty { "Custom RPC" }}",
-                value(CustomRPC.DETAILS),
-                value(CustomRPC.STATE),
-            ).filter {
-                it.isNotEmpty()
-            }.joinToString("\n")
-    }
-
     override fun onDestroyView() {
+        activeDialog?.dismiss()
+        activeDialog = null
         if (dirty) Utils.showToast("Unsaved CustomRPC changes discarded")
         inputs.clear()
         super.onDestroyView()
     }
 
-    private fun section(label: String) = addView(
-        text(label, 14, "colorTextMuted").apply {
-            setTypeface(typeface, Typeface.BOLD)
-            setPadding(0, dp(20), 0, dp(8))
-        },
-    )
+    private fun section(label: String) {
+        linearLayout.addView(DiscordSettingsUi.divider(requireContext()), LinearLayout.LayoutParams(-1, dp(1)))
+        addView(DiscordSettingsUi.header(requireContext(), label))
+    }
 
     private fun text(label: String, size: Int, attribute: String = "colorHeaderPrimary") =
-        TextView(requireContext()).apply {
+        DiscordSettingsUi.text(requireContext()).apply {
             text = label
             textSize = size.toFloat()
             setTextColor(color(attribute, Color.LTGRAY))
@@ -417,8 +320,8 @@ class CustomRPCSettings(private val settings: SettingsAPI, private val plugin: C
             background =
                 RippleDrawable(
                     ColorStateList.valueOf(color("colorBackgroundModifierSelected", 0x334f545c)),
-                    card(),
                     null,
+                    android.graphics.drawable.ColorDrawable(Color.WHITE),
                 )
             isFocusable = true
             setOnClickListener { action() }
@@ -430,22 +333,18 @@ class CustomRPCSettings(private val settings: SettingsAPI, private val plugin: C
         return subtitle
     }
 
-    private fun button(label: String, primary: Boolean, action: () -> Unit) = addView(
-        Button(requireContext()).apply {
+    private fun button(label: String, primary: Boolean, action: () -> Unit) {
+        val button = DiscordSettingsUi.button(requireContext(), primary).apply {
             text = label
-            isAllCaps = false
-            setTextColor(if (primary) Color.WHITE else color("colorTextDanger", Color.rgb(237, 66, 69)))
-            backgroundTintList = ColorStateList.valueOf(
-                color(if (primary) "colorBrand" else "colorBackgroundSecondary", Color.rgb(88, 101, 242)),
-            )
+            if (!primary) setTextColor(color("colorTextDanger", Color.RED))
             setOnClickListener { action() }
-        },
-    )
-
-    private fun card() = GradientDrawable().apply {
-        setColor(color("colorBackgroundSecondary", Color.rgb(47, 49, 54)))
-        cornerRadius =
-            dp(12).toFloat()
+        }
+        linearLayout.addView(
+            button,
+            LinearLayout.LayoutParams(-1, -2).apply {
+                setMargins(dp(16), dp(8), dp(16), 0)
+            },
+        )
     }
 
     private fun color(attribute: String, fallback: Int): Int {

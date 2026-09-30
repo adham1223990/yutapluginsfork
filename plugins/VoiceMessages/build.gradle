@@ -1,9 +1,11 @@
-version = "1.1.12"
+version = "1.1.13"
 description = "Send Voice Messages"
 
 aliucord {
     changelog.set(
         """
+        # 1.1.13
+        * Redesign
         # 1.1.12
         * Rewrite the plugin in Kotlin
         * Redesign settings and voice selection with themed cards and microphone previews
@@ -15,7 +17,6 @@ aliucord {
         * Fix settings restoration and prevent duplicate popups
         * Limit temporary audio storage usage
         * Use 48 kHz for recordings and remove the sampling rate toggle
-
         # 1.1.11
         * Use Discord's themed bottom sheet for voice message selection
         * Add an option to disable selection and hold the microphone to record

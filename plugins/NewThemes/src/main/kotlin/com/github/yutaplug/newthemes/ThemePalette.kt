@@ -6,19 +6,19 @@ import android.content.res.Resources
 import android.content.res.TypedArray
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
-import android.graphics.drawable.GradientDrawable
-import android.util.TypedValue
-import android.util.LongSparseArray
-import android.os.Build
-import android.widget.TextView
 import android.graphics.drawable.Drawable
+import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
+import android.os.Build
+import android.util.LongSparseArray
+import android.util.TypedValue
+import android.widget.TextView
 import androidx.appcompat.content.res.AppCompatResources
 import androidx.core.content.res.ResourcesCompat
-import com.aliucord.Utils
 import com.aliucord.api.PatcherAPI
 import com.aliucord.patcher.Hook
 import com.aliucord.patcher.PreHook
+import com.aliucord.Utils
 import de.robv.android.xposed.XposedBridge
 
 /** Changes only Discord's neutral dark palette, retaining accents and status colors. */
@@ -80,7 +80,14 @@ internal class ThemePalette(private val choice: () -> ThemeChoice) {
             }
         })
         // These callers may already have inlined the unpatched drawable loader.
-        XposedBridge.deoptimizeMethod(TypedArray::class.java.getDeclaredMethod("getDrawableForDensity", int, int))
+        val typedArrayDrawable = if (Build.VERSION.SDK_INT >= 26) {
+            TypedArray::class.java.getDeclaredMethod("getDrawableForDensity", int, int)
+        } else {
+            // The density overload was introduced in Oreo. Resolving it on
+            // Nougat throws and rolls back every plugin hook during start.
+            TypedArray::class.java.getDeclaredMethod("getDrawable", int)
+        }
+        XposedBridge.deoptimizeMethod(typedArrayDrawable)
         XposedBridge.deoptimizeMethod(Resources::class.java.getDeclaredMethod(
             "getDrawableForDensity", int, int, Resources.Theme::class.java,
         ))

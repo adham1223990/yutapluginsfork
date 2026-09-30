@@ -2,13 +2,13 @@ package com.github.yutaplug.bettermessagelogger
 
 import android.content.Context
 import android.util.LruCache
-import com.aliucord.Constants
-import com.aliucord.Utils
 import com.aliucord.annotations.AliucordPlugin
 import com.aliucord.api.SettingsAPI
+import com.aliucord.Constants
 import com.aliucord.entities.Plugin
 import com.aliucord.patcher.Hook
 import com.aliucord.patcher.PreHook
+import com.aliucord.Utils
 import com.discord.api.channel.Channel
 import com.discord.models.domain.ModelMessageDelete
 import com.discord.models.message.Message
@@ -17,11 +17,11 @@ import com.discord.stores.StoreMessagesLoader
 import com.discord.stores.StoreStream
 import com.discord.widgets.chat.list.actions.WidgetChatListActions
 import com.discord.widgets.chat.list.model.WidgetChatListModelMessages.MessagesWithMetadata
-import rx.Observable
-import rx.functions.Func2
-import rx.subjects.BehaviorSubject
 import java.io.File
 import java.util.concurrent.atomic.AtomicLong
+import rx.functions.Func2
+import rx.Observable
+import rx.subjects.BehaviorSubject
 import com.discord.api.message.Message as ApiMessage
 
 @AliucordPlugin
@@ -51,7 +51,7 @@ class BetterMessageLogger : Plugin() {
         instance = this
         filters = Filters(settings)
         settingsTab =
-            SettingsTab(BetterMessageLoggerSettings::class.java, SettingsTab.Type.BOTTOM_SHEET).withArgs(settings)
+            SettingsTab(BetterMessageLoggerSettings::class.java, SettingsTab.Type.PAGE).withArgs(settings)
         try {
             decorations =
                 MessageDecorations(settings, ::record, { message ->

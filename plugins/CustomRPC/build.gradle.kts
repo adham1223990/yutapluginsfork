@@ -1,8 +1,10 @@
-version = "1.0.5"
+version = "1.0.6"
 description = "Set a custom Rich Presence from Aliucord settings."
 aliucord {
     changelog.set(
         """
+        # 1.0.6
+        * Redesign
         # 1.0.5
         * Fix crash
         # 1.0.3

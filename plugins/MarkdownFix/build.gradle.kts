@@ -1,8 +1,10 @@
-version = "1.0.12"
+version = "1.0.13"
 description = "Backports Discord's newer Markdown formatting to chat messages."
 aliucord {
     changelog.set(
         """
+        # 1.0.13
+        * Redesign
         # 1.0.12
         * Add support for hex colors
         # 1.0.11
