@@ -2,7 +2,6 @@ package com.github.yutaplug.profileboard
 
 import android.content.Context
 import android.graphics.Typeface
-import android.graphics.drawable.Animatable
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
@@ -15,7 +14,6 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.content.res.ResourcesCompat
-import b.f.g.c.c
 import com.aliucord.Utils
 import com.aliucord.annotations.AliucordPlugin
 import com.aliucord.entities.Plugin
@@ -26,7 +24,6 @@ import com.discord.utilities.images.MGImages
 import com.discord.widgets.user.usersheet.WidgetUserSheet
 import com.discord.widgets.user.usersheet.WidgetUserSheetViewModel
 import com.facebook.drawee.view.SimpleDraweeView
-import com.facebook.imagepipeline.image.ImageInfo
 import com.google.android.flexbox.FlexboxLayout
 import com.google.android.material.card.MaterialCardView
 import java.lang.ref.WeakReference
@@ -110,6 +107,7 @@ class ProfileBoard : Plugin() {
                 root.post {
                     if (bindings[sheet] === current && sheet.view === root) {
                         removeOldRows(current.content, current.tabs, current.boardContent, current.wishlistContent)
+                        select(current, current.selected)
                     }
                 }
                 if (binding.userId != state.user.id) {
@@ -117,7 +115,8 @@ class ProfileBoard : Plugin() {
                     binding.generation++
                     binding.data = null
                     binding.selected = 0
-                    binding.tabs.visibility = View.VISIBLE
+                    binding.tabs.visibility = View.GONE
+                    (binding.boardTab.parent as? View)?.visibility = View.GONE
                     (binding.wishlistTab.parent as? View)?.visibility = View.GONE
                     renderStatus(binding, "Loading Board…")
                     select(binding, 0)
@@ -151,7 +150,8 @@ class ProfileBoard : Plugin() {
         val tabs = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             tag = TAB_MARKER
-            setBackgroundColor(themeColor(context, "colorBackgroundTertiary"))
+            setBackgroundColor(themeColor(context, "colorPrimaryTabs"))
+            visibility = View.GONE
         }
         val mainTab = tab(context, "Main")
         val boardTab = tab(context, "Board")
@@ -236,10 +236,11 @@ class ProfileBoard : Plugin() {
                     binding.generation != generation || target.view !== binding.root) return@post
                 result.onSuccess { data ->
                     binding.data = data
-                    (binding.wishlistTab.parent as? View)?.visibility = if (data.wishlist == null) View.GONE else View.VISIBLE
+                    updateTabs(binding, data)
                     if (data.widgets.isEmpty()) renderStatus(binding, "No widgets on this Board.")
                     else render(binding, data)
                     renderWishlist(binding, data.wishlist)
+                    select(binding, binding.selected)
                 }.onFailure { error ->
                     logger.error("Could not load profile board", error)
                     renderStatus(binding, "Could not load Board. Tap to retry.") {
@@ -251,11 +252,23 @@ class ProfileBoard : Plugin() {
         }
     }
 
+    private fun updateTabs(binding: Binding, data: BoardData) {
+        val hasBoard = data.widgets.isNotEmpty()
+        val hasWishlist = data.wishlist?.let { it.failed || it.items.isNotEmpty() } == true
+        (binding.boardTab.parent as? View)?.visibility = if (hasBoard) View.VISIBLE else View.GONE
+        (binding.wishlistTab.parent as? View)?.visibility = if (hasWishlist) View.VISIBLE else View.GONE
+        binding.tabs.visibility = if (hasBoard || hasWishlist) View.VISIBLE else View.GONE
+        if ((binding.selected == 1 && !hasBoard) || (binding.selected == 2 && !hasWishlist)) binding.selected = 0
+    }
+
     private fun select(binding: Binding, section: Int) {
         binding.selected = section
         if (section != 0) {
-            if (binding.visibilities.isEmpty()) {
-                for (view in binding.originals) {
+            var childIndex = binding.content.indexOfChild(binding.tabs) + 1
+            while (childIndex < binding.content.childCount) {
+                val view = binding.content.getChildAt(childIndex++)
+                if (view !== binding.boardContent && view !== binding.wishlistContent &&
+                    !binding.visibilities.containsKey(view)) {
                     binding.visibilities[view] = view.visibility
                     view.visibility = View.GONE
                 }
@@ -357,7 +370,7 @@ class ProfileBoard : Plugin() {
             while (column < 2) {
                 val item = if (index < wishlist.items.size) wishlist.items[index++] else null
                 val tile = FrameLayout(context).apply {
-                    background = GradientDrawable().apply {
+                    background = if (item == null) null else GradientDrawable().apply {
                         cornerRadius = dp(context, 16).toFloat()
                         setColor(themeColor(context, "colorBackgroundTertiary"))
                     }
@@ -392,15 +405,15 @@ class ProfileBoard : Plugin() {
                                 Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = dp(context, 20) })
                         }
                     }
-                } else if (item?.image != null) {
-                    val image = SimpleDraweeView(context).apply { contentDescription = item.name }
-                    tile.addView(image, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-                    MGImages.setImage(image, listOf(item.image), 0, 0, false, null,
-                        MGImages.AlwaysUpdateChangeDetector.INSTANCE, object : c<ImageInfo>() {
-                            override fun onFinalImageSet(id: String?, info: ImageInfo?, animatable: Animatable?) {
-                                fallback?.post { fallback.visibility = View.GONE }
-                            }
-                        })
+                } else if (item != null && (item.image != null || item.layers.isNotEmpty())) {
+                    tile.addView(WishlistPreview(context, item) {
+                        fallback?.visibility = View.GONE
+                    }, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+                }
+                if (item?.owned == true) {
+                    tile.addView(WishlistOwnedOverlay(context), FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
+                    ))
                 }
                 row.addView(tile, LinearLayout.LayoutParams(0, size, 1f).apply {
                     if (column == 0) marginEnd = dp(context, 8)
@@ -620,8 +633,12 @@ class ProfileBoard : Plugin() {
             isClickable = true
             isFocusable = true
             contentDescription = title
+            val ripple = TypedValue()
+            if (context.theme.resolveAttribute(android.R.attr.selectableItemBackground, ripple, true)) {
+                setBackgroundResource(ripple.resourceId)
+            }
         }
-        val label = styledText(context, "UserProfile_Section_HeaderTextAppearance").apply {
+        val label = styledText(context, "App_TabLayout_Text").apply {
             text = title
             gravity = Gravity.CENTER
             isAllCaps = false

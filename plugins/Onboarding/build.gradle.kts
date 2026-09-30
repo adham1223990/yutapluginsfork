@@ -13,6 +13,9 @@ aliucord {
         * Add channel search and expanded category groups with Follow Category controls.
         * Show channel icons, topics, and recent activity.
         * Fix category controls becoming unresponsive after a failed update.
+
+        # 1.0.1
+        * Allow disabling channels even if it's a default channel
         """.trimIndent(),
     )
 }

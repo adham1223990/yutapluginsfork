@@ -13,7 +13,15 @@ internal data class BoardGame(val id: String, val comment: String?, val tags: Li
 internal const val UNKNOWN_GAME_NAME = "Unknown game"
 internal data class BoardWidget(val type: String, val games: List<BoardGame>, val applicationId: String?)
 internal data class GameInfo(val name: String, val image: String?)
-internal data class WishlistItem(val name: String, val image: String?, val isNitro: Boolean)
+internal data class WishlistLayer(val image: String, val anchor: Int)
+internal data class WishlistItem(
+    val name: String,
+    val image: String?,
+    val isNitro: Boolean,
+    val type: Int = -1,
+    val owned: Boolean = false,
+    val layers: List<WishlistLayer> = emptyList(),
+)
 internal data class WishlistData(val items: List<WishlistItem>, val failed: Boolean = false)
 internal data class BoardData(
     val widgets: List<BoardWidget>,
@@ -25,6 +33,7 @@ internal data class BoardData(
 internal class BoardRepository {
     private val worker = Executors.newSingleThreadExecutor { task -> Thread(task, "ProfileBoardRequests") }
     @Volatile private var closed = false
+    private val products = HashMap<String, JSONObject>()
 
     fun load(userId: Long, callback: (Result<BoardData>) -> Unit) {
         val account = token() ?: return callback(Result.failure(IllegalStateException("Not signed in")))
@@ -41,7 +50,7 @@ internal class BoardRepository {
                     val response = runCatching {
                         request("/wishlists/$wishlistId?source=user_profile", account) as? JSONObject
                     }.getOrNull()
-                    if (response == null) WishlistData(emptyList(), true) else parseWishlist(response)
+                    if (response == null) WishlistData(emptyList(), true) else parseWishlist(response, account)
                 } else null
                 val gameIds = LinkedHashSet<String>()
                 for (widget in widgets) {
@@ -175,7 +184,7 @@ internal class BoardRepository {
         return id to GameInfo(name, image)
     }
 
-    private fun parseWishlist(response: JSONObject): WishlistData {
+    private fun parseWishlist(response: JSONObject, account: String): WishlistData {
         val items = ArrayList<WishlistItem>()
         val array = response.optJSONArray("wishlist_items") ?: return WishlistData(items)
         var index = 0
@@ -185,13 +194,50 @@ internal class BoardRepository {
             val name = sku?.text("name") ?: item?.text("sku_name") ?: "Unknown item"
             val id = sku?.text("id") ?: item?.text("sku_id")
             val preview = sku?.optJSONObject("preview_asset_paths")?.text("fg_static")
-            val productLine = sku?.optInt("product_line", item.optInt("sku_product_line", -1)) ?: -1
+            val productLine = sku?.optInt("product_line", item?.optInt("sku_product_line", -1) ?: -1)
+                ?: item?.optInt("sku_product_line", -1) ?: -1
             val applicationId = sku?.text("application_id")
             val thumbnail = sku?.text("thumbnail_asset_id")
-            val collectible = sku?.optJSONObject("tenant_metadata")?.optJSONObject("collectibles")?.optJSONObject("item")
+            val metadata = sku?.optJSONObject("tenant_metadata")?.optJSONObject("collectibles")
+            var collectible = metadata?.optJSONObject("item")
+            var type = collectible?.optInt("type", metadata?.optInt("type", -1) ?: -1) ?: metadata?.optInt("type", -1) ?: -1
+            // Frame SKUs sometimes omit their layer definitions. Fetch the product instead of
+            // treating its SKU as a single image asset (that URL does not exist for frames).
+            if (id != null && ((type == 3 && collectible?.optJSONArray("layers") == null) ||
+                (type == -1 && productLine == 7 && preview == null))) {
+                val product = products[id] ?: runCatching {
+                    request("/collectibles-products/$id", account) as? JSONObject
+                }.getOrNull()?.also { products[id] = it }
+                val productItems = product?.optJSONArray("items")
+                var productIndex = 0
+                while (productItems != null && productIndex < productItems.length()) {
+                    val candidate = productItems.optJSONObject(productIndex++)
+                    if (candidate != null && (type == -1 || candidate.optInt("type", -1) == type)) {
+                        collectible = candidate
+                        type = candidate.optInt("type", -1)
+                        break
+                    }
+                }
+            }
+            val layers = ArrayList<WishlistLayer>()
+            val frameLayers = collectible?.optJSONArray("layers")
+            var layerIndex = 0
+            while (id != null && frameLayers != null && layerIndex < frameLayers.length()) {
+                val layer = frameLayers.optJSONObject(layerIndex++) ?: continue
+                val layerId = layer.text("id") ?: continue
+                val anchor = when (layer.optString("anchor")) {
+                    "1", "bottom" -> 1
+                    "2", "center", "middle" -> 2
+                    else -> 0
+                }
+                layers.add(WishlistLayer("https://cdn.discordapp.com/media/v1/collectibles-shop/$id/$layerId/static", anchor))
+            }
             val collectiblePreview = collectible?.text("thumbnailPreviewSrc")
                 ?: collectible?.text("staticFrameSrc")
                 ?: collectible?.optJSONObject("assets")?.text("static_image_path")
+                ?: if (type == 0) collectible?.text("asset")?.let {
+                    "https://cdn.discordapp.com/avatar-decoration-presets/$it.png"
+                } else null
             val image = when {
                 toCdnUrl(collectiblePreview) != null -> toCdnUrl(collectiblePreview)
                 toCdnUrl(preview) != null -> toCdnUrl(preview)
@@ -200,7 +246,7 @@ internal class BoardRepository {
                 productLine == 7 && id != null -> "https://cdn.discordapp.com/media/v1/collectibles-shop/$id/static"
                 else -> null
             }
-            if (item != null) items.add(WishlistItem(name, image, productLine == 1))
+            if (item != null) items.add(WishlistItem(name, image, productLine == 1, type, item.optBoolean("is_owned"), layers))
             index++
         }
         return WishlistData(items)
@@ -209,6 +255,9 @@ internal class BoardRepository {
     private fun toCdnUrl(path: String?): String? = when {
         path == null -> null
         path.startsWith("https://") -> path
+        path.startsWith("//") -> "https:$path"
+        path.startsWith("/assets/") -> "https://cdn.discordapp.com$path"
+        path.startsWith("assets/") -> "https://cdn.discordapp.com/$path"
         path.startsWith("/media/") -> "https://cdn.discordapp.com$path"
         path.startsWith("media/") -> "https://cdn.discordapp.com/$path"
         path.startsWith("/collectibles-shop/") -> "https://cdn.discordapp.com/media/v1$path"
