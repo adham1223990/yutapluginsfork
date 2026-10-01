@@ -1,8 +1,10 @@
-version = "1.0.2"
+version = "1.0.3"
 description = "Allow users to set a custom avatar frame. Shares API with Vencord."
 aliucord {
     changelog.set(
         """
+        # 1.0.3
+        * Fixes
         # 1.0.2
         * Rewrite in Kotlin
         * Redesign settings page and add images for decor presets
