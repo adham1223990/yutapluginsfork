@@ -100,7 +100,7 @@ internal class OnboardingApi(private val expectedToken: String) {
         require(selected.size <= 750) { "Too many onboarding choices" }
         val now = System.currentTimeMillis()
         val body = JSONObject().put("onboarding_responses", JSONArray(selected.toList()))
-        if (initial) {
+        fun addSeenTimestamps() {
             val seenPrompts = JSONObject()
             val seenResponses = JSONObject()
             config.prompts.filter { it.inOnboarding }.forEach { seenPrompts.put(it.id, now) }
@@ -108,10 +108,31 @@ internal class OnboardingApi(private val expectedToken: String) {
             body.put("onboarding_prompts_seen", seenPrompts)
             body.put("onboarding_responses_seen", seenResponses)
         }
+        fun validateInitialAnswers() {
+            val missing = config.prompts.firstOrNull { prompt ->
+                prompt.inOnboarding && prompt.required && prompt.options.none { it.id in selected }
+            }
+            require(missing == null) { "Complete the required onboarding question: ${missing?.title}" }
+        }
+        if (initial) {
+            validateInitialAnswers()
+            addSeenTimestamps()
+        }
         val route = "/guilds/${config.guildId}/onboarding-responses"
         try {
             request(route, if (initial) "POST" else "PUT", body)
         } catch (error: OnboardingHttpError) {
+            if (!initial && error.status == 403 && error.code == 350002) {
+                validateInitialAnswers()
+                addSeenTimestamps()
+                try {
+                    request(route, "POST", body)
+                } catch (retryError: OnboardingHttpError) {
+                    retryError.addSuppressed(error)
+                    throw retryError
+                }
+                return
+            }
             if (error.status == 404 || error.status == 409 || (initial && error.status == 403)) {
                 try {
                     request(route, if (initial) "PUT" else "POST", body)

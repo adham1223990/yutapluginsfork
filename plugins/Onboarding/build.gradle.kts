@@ -1,9 +1,13 @@
-version = "1.0.3"
+version = "1.0.4"
 description = "Backports community onboarding and Channels & Roles to Discord 126.21."
 
 aliucord {
     changelog.set(
         """
+        # 1.0.4
+        * Add a Show All Channels toggle to the server sheet, synced with Browse Channels.
+        * Fix saving Channels & Roles when initial onboarding is incomplete (Discord error 350002).
+
         # 1.0.3
         * Fix a crash when opening Channels & Roles by using Discord's native dialog button styles.
         * Remove the Check Onboarding button. Joining-server onboarding and customization questions remain available.
