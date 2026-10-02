@@ -31,6 +31,30 @@ class ShopPage : AppFragment(Utils.getResId("widget_settings_authorized_apps", "
     private lateinit var status: TextView
     private lateinit var list: RecyclerView
     private var loading = false
+    private val previews = mutableMapOf<String, String?>()
+    private val pendingPreviews = mutableMapOf<String, MutableList<(String?) -> Unit>>()
+
+    private fun resolvePreview(value: JSONObject, callback: (String?) -> Unit) {
+        val key = value.toString()
+        if (previews.containsKey(key)) {
+            callback(previews[key])
+            return
+        }
+        pendingPreviews[key]?.let {
+            it.add(callback)
+            return
+        }
+        pendingPreviews[key] = mutableListOf(callback)
+        val current = generation
+        worker.execute {
+            val url = runCatching { ShopApi.resolvePreview(value) }.getOrNull()
+            main.post {
+                if (bound == null || closed || generation != current) return@post
+                previews[key] = url
+                pendingPreviews.remove(key)?.forEach { it(url) }
+            }
+        }
+    }
 
     override fun onViewBound(view: View) {
         super.onViewBound(view)
@@ -124,6 +148,7 @@ class ShopPage : AppFragment(Utils.getResId("widget_settings_authorized_apps", "
 
             override fun onBindViewHolder(holder: Card, position: Int) {
                 val item = items[position]
+                holder.itemView.tag = item
                 val widePreview = mode == 0 || (mode == 2 && item.optInt("type", -1) == 2)
                 holder.name.text =
                     if (mode == 2) ShopApi.itemName(item) else item.optString("name")
@@ -149,7 +174,20 @@ class ShopPage : AppFragment(Utils.getResId("widget_settings_authorized_apps", "
                 }
                 holder.image.setImageURI(url)
                 if (mode == 2 && url == null) {
-                    holder.details.text = "${ShopApi.typeName(item)} · Preview unavailable"
+                    holder.details.text = "${ShopApi.typeName(item)} · Loading preview…"
+                }
+                if (mode != 0) {
+                    resolvePreview(item) { resolved ->
+                        if (holder.itemView.tag !== item) return@resolvePreview
+                        holder.image.setImageURI(resolved)
+                        if (mode == 2) {
+                            holder.details.text = if (resolved == null) {
+                                "${ShopApi.typeName(item)} · Preview unavailable"
+                            } else {
+                                ShopApi.typeName(item)
+                            }
+                        }
+                    }
                 }
                 holder.image.hierarchy.n(
                     if (mode == 0) `ScalingUtils$ScaleType`.i else `ScalingUtils$ScaleType`.e,
@@ -206,6 +244,7 @@ class ShopPage : AppFragment(Utils.getResId("widget_settings_authorized_apps", "
             }
 
             override fun onViewRecycled(holder: Card) {
+                holder.itemView.tag = null
                 holder.image.setImageURI(null as String?)
                 holder.itemView.setOnClickListener(null)
             }
@@ -216,6 +255,7 @@ class ShopPage : AppFragment(Utils.getResId("widget_settings_authorized_apps", "
         generation++
         bound?.findViewById<RecyclerView>(Utils.getResId("authorized_apps_list", "id"))?.adapter = null
         bound = null
+        pendingPreviews.clear()
         worker.shutdownNow()
         main.removeCallbacksAndMessages(null)
         super.onDestroyView()
