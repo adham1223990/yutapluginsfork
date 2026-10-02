@@ -60,8 +60,18 @@ internal object ShopApi {
         return when (item.optInt("type", -1)) {
             0 -> decorationImage(item)
             1 -> image(item.optString("staticFrameSrc")) ?: image(item.optString("thumbnailPreviewSrc"))
+            2 -> nameplateImage(item)
             else -> null
         }
+    }
+
+    private fun nameplateImage(item: JSONObject): String? {
+        var path = item.optString("asset")
+        if (path.endsWith("/")) path = path.substring(0, path.length - 1)
+        if (path.isEmpty() || !path.matches(Regex("[a-zA-Z0-9_/-]+"))) return null
+        // Nameplates provide a directory, not an avatar-decoration hash.
+        // https://docs.discord.food/reference#cdn-endpoints
+        return "https://cdn.discordapp.com/assets/collectibles/$path/static.png"
     }
 
     fun summary(product: JSONObject): String {

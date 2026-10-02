@@ -124,6 +124,7 @@ class ShopPage : AppFragment(Utils.getResId("widget_settings_authorized_apps", "
 
             override fun onBindViewHolder(holder: Card, position: Int) {
                 val item = items[position]
+                val widePreview = mode == 0 || (mode == 2 && item.optInt("type", -1) == 2)
                 holder.name.text =
                     if (mode == 2) ShopApi.itemName(item) else item.optString("name")
                 holder.details.text = when (mode) {
@@ -155,7 +156,7 @@ class ShopPage : AppFragment(Utils.getResId("widget_settings_authorized_apps", "
                 )
                 holder.image.layoutParams = holder.image.layoutParams.apply {
                     val size = (if (mode == 2) 160 else 80) * holder.itemView.resources.displayMetrics.density
-                    width = if (mode == 0) ViewGroup.LayoutParams.MATCH_PARENT else size.toInt()
+                    width = if (widePreview) ViewGroup.LayoutParams.MATCH_PARENT else size.toInt()
                     height =
                         if (mode == 0) {
                             (160 * holder.itemView.resources.displayMetrics.density).toInt()
@@ -163,7 +164,7 @@ class ShopPage : AppFragment(Utils.getResId("widget_settings_authorized_apps", "
                             size.toInt()
                         }
                 }
-                if (mode == 0) {
+                if (widePreview) {
                     holder.image.layoutParams = (holder.image.layoutParams as RelativeLayout.LayoutParams).apply {
                         removeRule(RelativeLayout.CENTER_VERTICAL)
                         addRule(RelativeLayout.ALIGN_PARENT_TOP)
@@ -176,7 +177,7 @@ class ShopPage : AppFragment(Utils.getResId("widget_settings_authorized_apps", "
                 }
                 // Retain the native store card's typography, background and spacing.
                 val offset =
-                    if (mode == 0) {
+                    if (widePreview) {
                         0
                     } else {
                         holder.image.layoutParams.width +
