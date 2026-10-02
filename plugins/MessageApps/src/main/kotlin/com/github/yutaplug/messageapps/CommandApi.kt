@@ -16,6 +16,8 @@ internal data class MessageTarget(
 
 internal class CommandRateLimit(val retryAt: Long?) : Exception("Discord is temporarily rate limiting apps.")
 
+internal class CommandApiFailure(val status: Int, message: String) : Exception(message)
+
 internal data class MessageCommand(val raw: JSONObject, val app: JSONObject) {
     val id: String = raw.getString("id")
     val appId: String = raw.getString("application_id")
@@ -28,20 +30,27 @@ internal data class MessageCommand(val raw: JSONObject, val app: JSONObject) {
 
 internal class CommandApi(private val expectedToken: String, private val enabled: () -> Boolean) {
     fun load(target: MessageTarget): List<MessageCommand> {
-        val indexes = listOf(
-            request(
-                if (target.guildId != 0L) {
-                    "/guilds/${target.guildId}/application-command-index"
-                } else {
-                    "/channels/${target.channelId}/application-command-index"
-                },
-            ),
-            request("/users/@me/application-command-index"),
-        )
-        val apps = linkedMapOf<String, JSONObject>()
+        val indexes = mutableListOf<Pair<Boolean, JSONObject>>()
+        if (target.guildId != 0L) {
+            indexes.add(false to request("/guilds/${target.guildId}/application-command-index"))
+            indexes.add(true to request("/users/@me/application-command-index"))
+        } else {
+            // Ordinary user DMs have no channel command index. Account apps are independent of it.
+            indexes.add(true to request("/users/@me/application-command-index"))
+            val channel = StoreStream.getChannels().getChannel(target.channelId)
+            val hasChannelApps = channel?.D() == 3 || channel?.z()?.any { it.e() == true } == true
+            if (hasChannelApps) {
+                try {
+                    indexes.add(false to request("/channels/${target.channelId}/application-command-index"))
+                } catch (error: CommandApiFailure) {
+                    // Some private channels have no integrations; retain the account app index.
+                    if (error.status != 404) throw error
+                }
+            }
+        }
         val commands = linkedMapOf<String, MessageCommand>()
-        indexes.forEachIndexed { source, index ->
-            val userInstalled = source == 1
+        indexes.forEach { (userInstalled, index) ->
+            val apps = linkedMapOf<String, JSONObject>()
             val appArray = index.optJSONArray("applications") ?: error("Discord returned an invalid app index.")
             val commandArray =
                 index.optJSONArray("application_commands") ?: error("Discord returned an invalid command index.")
@@ -85,11 +94,14 @@ internal class CommandApi(private val expectedToken: String, private val enabled
             0
         } else {
             val botId = app.optLong("bot_id", app.optJSONObject("bot")?.optLong("id") ?: 0L)
-            if (channel.D() == 1 && channel.z()?.any { it.id == botId } == true) 1 else 2
+            val isBotDm = channel.D() == 1 &&
+                botId != 0L &&
+                (channel.y()?.contains(botId) == true || channel.z()?.any { it.id == botId } == true)
+            if (isBotDm) 1 else 2
         }
         val contexts = command.optJSONArray("contexts")
         if (contexts != null && (0 until contexts.length()).none { contexts.optInt(it) == context }) return false
-        if (target.guildId == 0L && !command.optBoolean("dm_permission", true)) return false
+        if (contexts == null && target.guildId == 0L && !command.optBoolean("dm_permission", true)) return false
         val parent = StoreStream.getChannels().getChannel(channel.u())
         if (command.optBoolean("nsfw") && !channel.r() && parent?.r() != true) return false
         if (target.guildId == 0L) return true
@@ -209,7 +221,10 @@ internal class CommandApi(private val expectedToken: String, private val enabled
                         throw CommandRateLimit(retryAt)
                     }
                     val message = failure?.optString("message")
-                    error(message?.takeIf { value -> value.isNotEmpty() } ?: "Discord returned HTTP ${it.statusCode}.")
+                    throw CommandApiFailure(
+                        it.statusCode,
+                        message?.takeIf { value -> value.isNotEmpty() } ?: "Discord returned HTTP ${it.statusCode}.",
+                    )
                 }
                 val text = it.text()
                 val body = if (hasText(text)) JSONObject(text) else JSONObject()
