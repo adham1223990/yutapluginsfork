@@ -10,7 +10,7 @@ internal object ShopApi {
     // Collectibles schema: https://docs.discord.food/resources/collectibles
     fun categories(token: String): List<JSONObject> {
         return Http.Request
-            .newDiscordRequest(
+            .newDiscordRNRequest(
                 "/collectibles-categories/v2?include_bundles=true&variants_return_style=1",
                 "GET",
             ).use { request ->
@@ -25,6 +25,71 @@ internal object ShopApi {
     }
 
     fun token(): String? = RestAPI.AppHeadersProvider.INSTANCE.authToken?.takeIf(::hasText)
+
+    // Orbs: https://docs.discord.food/resources/store#get-virtual-currency-balance
+    fun orbsBalance(token: String): Int? {
+        return Http.Request
+            .newDiscordRNRequest("/users/@me/virtual-currency/balance", "GET")
+            .use { request ->
+                request.setHeader("Authorization", token)
+                request.setRequestTimeout(15_000)
+                request.execute().use { response ->
+                    if (!response.ok()) return@use null
+                    val balance = JSONObject(response.text()).optInt("balance", -1)
+                    if (balance >= 0) balance else null
+                }
+            }
+    }
+
+    // A collectible category can mark every product in it as Orbs-exclusive.
+    // https://docs.discord.food/resources/collectibles#collectible-category-object
+    fun isOrbsExclusive(category: JSONObject): Boolean = category.optBoolean("is_orbs_exclusive", false)
+
+    // The Orbs price isn't at one fixed path on a collectible product (the schema nests pricing
+    // under a purchase-type map), so this walks the JSON tree for any price object whose
+    // currency is "discord_orb" rather than assuming one exact path.
+    fun orbsPrice(value: JSONObject): Int? = orbsPriceIn(value)
+
+    private fun orbsPriceIn(value: Any?): Int? {
+        if (value is JSONObject) {
+            if (value.optString("currency") == "discord_orb") {
+                val amount = value.optInt("amount", -1)
+                if (amount >= 0) return amount
+            }
+            val keys = value.keys()
+            while (keys.hasNext()) {
+                orbsPriceIn(value.opt(keys.next()))?.let { return it }
+            }
+            return null
+        }
+        if (value is JSONArray) {
+            var index = 0
+            while (index < value.length()) {
+                orbsPriceIn(value.opt(index))?.let { return it }
+                index++
+            }
+        }
+        return null
+    }
+
+    // Purchases a collectible SKU using the user's Orbs balance.
+    // https://docs.discord.food/resources/store#redeem-virtual-currency
+    fun redeemWithOrbs(token: String, skuId: String): JSONObject {
+        return Http.Request
+            .newDiscordRNRequest("/virtual-currency/skus/$skuId/redeem", "POST")
+            .use { request ->
+                request.setHeader("Authorization", token)
+                request.setHeader("Content-Type", "application/json")
+                request.setRequestTimeout(15_000)
+                request.executeWithBody("{}").use { response ->
+                    check(response.ok()) {
+                        "Discord returned HTTP ${response.statusCode}: ${response.text()}"
+                    }
+                    val text = response.text()
+                    if (hasText(text)) JSONObject(text) else JSONObject()
+                }
+            }
+    }
 
     fun products(category: JSONObject): List<JSONObject> = objects(category.optJSONArray("products"))
 
@@ -116,7 +181,7 @@ internal object ShopApi {
         val sku = value.optString("sku_id")
         if (!sku.matches(Regex("[0-9]+")) || Thread.currentThread().isInterrupted) return null
         val full = runCatching {
-            Http.Request.newDiscordRequest("/collectibles-products/$sku", "GET").use { request ->
+            Http.Request.newDiscordRNRequest("/collectibles-products/$sku", "GET").use { request ->
                 request.setRequestTimeout(10_000)
                 request.execute().use { response ->
                     check(response.ok())
