@@ -1,12 +1,16 @@
 package com.github.yutaplug.shop
 
+import android.app.AlertDialog
 import android.content.Context
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.Button
+import android.widget.LinearLayout
 import android.widget.RelativeLayout
 import android.widget.TextView
 import androidx.appcompat.widget.Toolbar
@@ -33,6 +37,17 @@ class ShopPage : AppFragment(Utils.getResId("widget_settings_authorized_apps", "
     private var loading = false
     private val previews = mutableMapOf<String, String?>()
     private val pendingPreviews = mutableMapOf<String, MutableList<(String?) -> Unit>>()
+
+    // Orbs: balance pill + exclusive filter (root collections screen only).
+    private var orbsBalance: Int? = null
+    private var allCategories: List<JSONObject> = emptyList()
+    private var orbsOnlyFilter = false
+    private var orbsRow: TextView? = null
+    private var filterButton: Button? = null
+
+    // Orbs: purchase button (product detail screen only).
+    private var purchaseButton: Button? = null
+    private var purchasing = false
 
     private fun resolvePreview(value: JSONObject, callback: (String?) -> Unit) {
         val key = value.toString()
@@ -87,6 +102,7 @@ class ShopPage : AppFragment(Utils.getResId("widget_settings_authorized_apps", "
             status.text = ShopApi.summary(it)
             val items = ShopApi.items(it).ifEmpty { listOf(it) }
             show(items, 2)
+            addPurchaseButton(column, it)
             return
         }
         category?.let {
@@ -97,7 +113,117 @@ class ShopPage : AppFragment(Utils.getResId("widget_settings_authorized_apps", "
         }
         header.text = "COLLECTIONS"
         status.setOnClickListener { load() }
+        addOrbsRow(column)
         load()
+    }
+
+    // Adds a Redeem-with-Orbs button under the summary on a product detail page, only if the
+    // product actually has an Orbs price.
+    private fun addPurchaseButton(column: ViewGroup, product: JSONObject) {
+        val orbsPrice = ShopApi.orbsPrice(product) ?: return
+        val skuId = product.optString("sku_id")
+        if (skuId.isEmpty()) return
+
+        val button = Button(column.context).apply {
+            text = "Redeem for $orbsPrice Orbs"
+        }
+        button.setOnClickListener { confirmPurchase(skuId, orbsPrice) }
+        column.addView(button)
+        purchaseButton = button
+    }
+
+    private fun confirmPurchase(skuId: String, orbsPrice: Int) {
+        if (closed) return
+        AlertDialog.Builder(requireContext())
+            .setTitle("Redeem with Orbs")
+            .setMessage("Spend $orbsPrice Orbs on this item? This cannot be undone.")
+            .setPositiveButton("Redeem") { _, _ -> purchase(skuId) }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun purchase(skuId: String) {
+        if (purchasing || closed || bound == null) return
+        val token = ShopApi.token()
+        if (token == null) {
+            Utils.showToast("Sign in to Discord to redeem items.", true)
+            return
+        }
+        purchasing = true
+        purchaseButton?.isEnabled = false
+        purchaseButton?.text = "Redeeming…"
+        val current = generation
+        worker.execute {
+            val result = runCatching { ShopApi.redeemWithOrbs(token, skuId) }
+            main.post {
+                purchasing = false
+                if (bound == null || closed || generation != current) return@post
+                result
+                    .onSuccess {
+                        Utils.showToast("Redeemed! Check your profile to see the item.", true)
+                        purchaseButton?.text = "Redeemed"
+                        purchaseButton?.isEnabled = false
+                    }
+                    .onFailure {
+                        Utils.showToast("Could not redeem: ${it.message.orEmpty()}", true)
+                        purchaseButton?.isEnabled = true
+                        purchaseButton?.text = "Redeem"
+                    }
+            }
+        }
+    }
+
+    // Adds the Orbs balance pill and the "Orbs Exclusive" filter toggle above the collections
+    // list. Only used on the root screen (no category/product selected yet).
+    private fun addOrbsRow(column: ViewGroup) {
+        val ctx = column.context
+        val row = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        val balanceText = TextView(ctx).apply { text = "Orbs: …" }
+        row.addView(balanceText)
+        orbsRow = balanceText
+
+        val toggle = Button(ctx).apply { text = "Orbs Exclusive" }
+        toggle.setOnClickListener {
+            orbsOnlyFilter = !orbsOnlyFilter
+            applyOrbsFilter()
+        }
+        row.addView(toggle)
+        filterButton = toggle
+
+        column.addView(row)
+        loadOrbsBalance()
+    }
+
+    private fun loadOrbsBalance() {
+        val token = ShopApi.token() ?: return
+        val current = generation
+        worker.execute {
+            val balance = runCatching { ShopApi.orbsBalance(token) }.getOrNull()
+            main.post {
+                if (bound == null || closed || generation != current) return@post
+                orbsBalance = balance
+                orbsRow?.text = if (balance != null) "Orbs: $balance" else "Orbs: unavailable"
+            }
+        }
+    }
+
+    // Re-renders the root collections list filtered to Orbs-exclusive categories only, or shows
+    // all categories again when the filter is toggled off.
+    private fun applyOrbsFilter() {
+        filterButton?.isEnabled = false
+        filterButton?.text = if (orbsOnlyFilter) "Orbs Exclusive ✓" else "Orbs Exclusive"
+        filterButton?.isEnabled = true
+        val filtered = if (orbsOnlyFilter) allCategories.filter(ShopApi::isOrbsExclusive) else allCategories
+        status.text = if (filtered.isEmpty()) {
+            "No Orbs-exclusive collections right now. Tap to refresh."
+        } else {
+            "Browse collections and select a collectible to view its details. Tap here to refresh."
+        }
+        show(filtered, 0)
     }
 
     private fun load() {
@@ -122,12 +248,11 @@ class ShopPage : AppFragment(Utils.getResId("widget_settings_authorized_apps", "
                 }
                 result
                     .onSuccess {
-                        status.text = if (it.isEmpty()) {
-                            "No collectibles are currently available. Tap to refresh."
-                        } else {
-                            "Browse collections and select a collectible to view its details. Tap here to refresh."
+                        allCategories = it
+                        if (it.isEmpty()) {
+                            status.text = "No collectibles are currently available. Tap to refresh."
                         }
-                        show(it, 0)
+                        applyOrbsFilter()
                     }.onFailure {
                         status.text = "Could not load the Shop. ${it.message.orEmpty()} Tap to retry."
                     }
@@ -255,6 +380,9 @@ class ShopPage : AppFragment(Utils.getResId("widget_settings_authorized_apps", "
         generation++
         bound?.findViewById<RecyclerView>(Utils.getResId("authorized_apps_list", "id"))?.adapter = null
         bound = null
+        orbsRow = null
+        filterButton = null
+        purchaseButton = null
         pendingPreviews.clear()
         worker.shutdownNow()
         main.removeCallbacksAndMessages(null)
